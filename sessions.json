@@ -1,3 +1,21 @@
 {
-  "admin": []
+  "admin": [],
+  "王泽宇": [
+    {
+      "id": "moptgf4cbqqf",
+      "name": "新对话",
+      "messages": [
+        {
+          "role": "user",
+          "content": "老师",
+          "time": "21:38"
+        }
+      ],
+      "tags": [
+        "师范/教育"
+      ],
+      "createdAt": "2026-05-03T13:38:35.532Z",
+      "updatedAt": "2026-05-03T13:38:35.538Z"
+    }
+  ]
 }
