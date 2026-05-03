@@ -2,21 +2,11 @@
   "admin": {
     "password": "admin123",
     "role": "admin",
-    "createdAt": "2026-05-03T05:42:51.390Z"
+    "createdAt": "2026-05-03T05:56:47.069Z"
   },
-  "李宛桐": {
-    "password": "123",
+  "user": {
+    "password": "user123",
     "role": "user",
-    "createdAt": "2026-05-03T05:44:39.358Z"
-  },
-  "孟祥瑞": {
-    "password": "123",
-    "role": "user",
-    "createdAt": "2026-05-03T05:44:47.790Z"
-  },
-  "王泽宇": {
-    "password": "123",
-    "role": "user",
-    "createdAt": "2026-05-03T05:44:56.512Z"
+    "createdAt": "2026-05-03T05:56:47.069Z"
   }
 }
