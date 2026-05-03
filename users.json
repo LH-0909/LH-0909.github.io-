@@ -11,7 +11,8 @@
   },
   "_app_config": {
     "repo": "lh-0909/LH-0909.github.io-",
-    "path": "users.json"
+    "path": "users.json",
+    "sessionsPath": "sessions.json"
   },
   "李宛桐": {
     "password": "123",
