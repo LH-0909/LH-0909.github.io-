@@ -3,5 +3,10 @@
     "password": "admin123",
     "role": "admin",
     "createdAt": "2026-05-03T05:34:52.634Z"
+  },
+  "孟祥瑞": {
+    "password": "123",
+    "role": "user",
+    "createdAt": "2026-05-03T05:39:14.461Z"
   }
 }
