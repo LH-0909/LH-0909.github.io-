@@ -12,5 +12,10 @@
   "_app_config": {
     "repo": "lh-0909/LH-0909.github.io-",
     "path": "users.json"
+  },
+  "李宛桐": {
+    "password": "123",
+    "role": "user",
+    "createdAt": "2026-05-03T06:10:22.516Z"
   }
 }
