@@ -3,10 +3,5 @@
     "password": "admin123",
     "role": "admin",
     "createdAt": "2026-05-03T05:42:51.390Z"
-  },
-  "user": {
-    "password": "user123",
-    "role": "user",
-    "createdAt": "2026-05-03T05:42:51.390Z"
   }
 }
