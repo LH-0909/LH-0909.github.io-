@@ -13,7 +13,7 @@
     "repo": "lh-0909/LH-0909.github.io-",
     "path": "users.json",
     "sessionsPath": "sessions.json",
-    "serverUrl": {}
+    "serverUrl": "https://arousal-brunch-luminance.ngrok-free.dev"
   },
   "李宛桐": {
     "password": "123",
