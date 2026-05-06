@@ -217,6 +217,51 @@ def kb_search():
         'formatted': formatted,
         'count': len(results)
     })
+# ─── Auto-sync ngrok URL on startup ───
+def sync_ngrok_url():
+    """Detect current ngrok public URL and update GitHub _app_config so all devices can discover it."""
+    import urllib.request
+    try:
+        ngrok_resp = urllib.request.urlopen('http://127.0.0.1:4040/api/tunnels', timeout=3)
+        tunnels = json.loads(ngrok_resp.read()).get('tunnels', [])
+        ngrok_url = ''
+        for t in tunnels:
+            if t.get('config', {}).get('addr', '').endswith(str(PORT)):
+                ngrok_url = t.get('public_url', '')
+                break
+        if not ngrok_url and tunnels:
+            ngrok_url = tunnels[0].get('public_url', '')
+
+        if not ngrok_url:
+            logging.warning('ngrok URL not detected (ngrok not running or API unavailable)')
+            return
+
+        logging.info(f'Detected ngrok URL: {ngrok_url}')
+
+        # Fetch current users.json
+        result, _, _ = _gh_get(USERS_PATH)
+        if not result:
+            logging.warning('Cannot fetch users.json, skip ngrok URL sync')
+            return
+
+        users = result['data']
+        sha = result['sha']
+        old_url = users.get('_app_config', {}).get('serverUrl', '')
+        if old_url == ngrok_url:
+            logging.info('ngrok URL unchanged, skip update')
+            return
+
+        if '_app_config' not in users:
+            users['_app_config'] = {}
+        users['_app_config']['serverUrl'] = ngrok_url
+        ok, _, err = _gh_put(USERS_PATH, users, sha, 'Auto-update ngrok URL')
+        if ok:
+            logging.info(f'Updated _app_config.serverUrl → {ngrok_url}')
+        else:
+            logging.warning(f'Failed to update _app_config: {err}')
+    except Exception as e:
+        logging.warning(f'sync_ngrok_url failed: {e}')
+
 if __name__ == '__main__':
     print(f'''\n{'='*50}
   张雪峰升学顾问 - 后端服务
@@ -226,4 +271,5 @@ if __name__ == '__main__':
 {'='*50}\n''')
     if not GITHUB_TOKEN or not GITHUB_REPO:
         print('⚠ 警告：请设置环境变量 GITHUB_TOKEN 和 GITHUB_REPO\n')
+    sync_ngrok_url()
     app.run(host='0.0.0.0', port=PORT, debug=False)

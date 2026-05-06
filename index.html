@@ -221,7 +221,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
       window._zxfLogin._sha = sha || '';
       localStorage.setItem('zxf_cached_users', JSON.stringify(users));
       var appCfg = users._app_config;
-      if (appCfg && appCfg.serverUrl) {
+      if (appCfg && appCfg.serverUrl && typeof appCfg.serverUrl === 'string' && !appCfg.serverUrl.startsWith('[object')) {
         try {
           var saved2 = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}');
           if (!saved2.serverUrl) {
@@ -286,14 +286,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
     // Server mode: use /api/login
     // serverUrl 由页面加载时 refreshLoginState 自动从 GitHub 发现并保存
     var serverUrl = (function() {
-      try { var c = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}'); return c.serverUrl || ''; }
+      try { var c = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}'); var u = c.serverUrl || ''; return (typeof u === 'string' && !u.startsWith('[object')) ? u : ''; }
       catch(e) { return ''; }
     })();
 
     if (serverUrl) {
       err.textContent = '正在通过服务器登录...';
       err.style.color = '#3b6df0';
-      fetch(serverUrl + '/api/login', {
+      serverFetch(serverUrl + '/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: u, password: p })
@@ -395,7 +395,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
     try { saved = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}'); } catch(e) {}
     var cfg2 = getGithubConfig();
     var status2 = document.getElementById('githubStatus');
-    if (saved.serverUrl) {
+    if (saved.serverUrl && typeof saved.serverUrl === 'string' && !saved.serverUrl.startsWith('[object')) {
       if (status2) { status2.textContent = '🔗 服务器模式'; status2.style.color = '#22a85d'; }
       window._zxfLogin.users = cachedUsers;
       _configFetchAttempts = 0;
@@ -646,8 +646,20 @@ let appData = null;
 
 // ─── Server / GitHub helpers ───
 function getServerUrl() {
-  try { const c = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}'); return c.serverUrl || ''; }
+  try {
+    const c = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}');
+    const url = c.serverUrl || '';
+    // Guard against corrupted data like "[object Object]"
+    if (typeof url !== 'string' || url.startsWith('[object')) return '';
+    return url;
+  }
   catch(e) { return ''; }
+}
+// ngrok free tier shows a browser warning interstitial — this header skips it
+function serverFetch(url, options) {
+  options = options || {};
+  options.headers = Object.assign({}, options.headers || {}, { 'ngrok-skip-browser-warning': 'true' });
+  return fetch(url, options);
 }
 function getGithubConfig() {
   try { const c = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}'); return { token: c.githubToken || '', repo: c.githubRepo || DEFAULT_REPO, path: c.githubPath || 'users.json' }; }
@@ -659,7 +671,7 @@ function ghUtf82b64(str) { return btoa(unescape(encodeURIComponent(str))); }
 async function githubFetchUsers() {
   const serverUrl = getServerUrl();
   if (serverUrl) {
-    const resp = await fetch(serverUrl + '/api/users');
+    const resp = await serverFetch(serverUrl + '/api/users');
     if (!resp.ok) throw new Error('Server HTTP ' + resp.status);
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || 'Server error');
@@ -703,7 +715,7 @@ async function githubSaveUsers(users, commitMsg) {
     const cfg = getGithubConfig();
     const config = { serverUrl, repo: cfg.repo, path: cfg.path };
     // Use a single request with all users data
-    const resp = await fetch(serverUrl + '/api/users/batch', {
+    const resp = await serverFetch(serverUrl + '/api/users/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ users, message: commitMsg || 'Update users.json' })
@@ -757,7 +769,7 @@ async function githubFetchSessions(username) {
   const serverUrl = getServerUrl();
   if (serverUrl) {
     try {
-      const resp = await fetch(serverUrl + '/api/sessions/' + encodeURIComponent(username));
+      const resp = await serverFetch(serverUrl + '/api/sessions/' + encodeURIComponent(username));
       if (!resp.ok) return null;
       const data = await resp.json();
       return { sessions: data.sessions || [], sha: data._sha || '', all: {} };
@@ -780,7 +792,7 @@ async function githubSaveSessions(username, sessions) {
   const serverUrl = getServerUrl();
   if (serverUrl) {
     try {
-      const resp = await fetch(serverUrl + '/api/sessions/' + encodeURIComponent(username), {
+      const resp = await serverFetch(serverUrl + '/api/sessions/' + encodeURIComponent(username), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessions })
@@ -1496,7 +1508,7 @@ async function callAPI(userMsg) {
   } else {
     console.log('[KB] 正在检索:', serverUrl + '/api/kb-search', 'query:', userMsg.slice(0, 50));
     try {
-      const kbResp = await fetch(serverUrl + '/api/kb-search', {
+      const kbResp = await serverFetch(serverUrl + '/api/kb-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: userMsg })
