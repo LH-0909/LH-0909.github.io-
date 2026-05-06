@@ -205,7 +205,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 
   window._zxfLogin = { users: cachedUsers, current: null, githubConfigured: false };
 
-  // Fetch users from GitHub
+  // Fetch users from GitHub (API first, raw CDN fallback)
   window._zxfFetchUsers = function(callback) {
     var cfg = getGithubConfig();
     if (!cfg.repo) {
@@ -215,19 +215,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
       return;
     }
     window._zxfLogin.githubConfigured = true;
-    var url = 'https://api.github.com/repos/' + cfg.repo + '/contents/' + cfg.path;
-    var headers = { 'Accept': 'application/vnd.github.v3+json' };
-    if (cfg.token) headers['Authorization'] = 'Bearer ' + cfg.token;
-    fetch(url, { headers: headers })
-    .then(function(resp) {
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      return resp.json();
-    })
-    .then(function(data) {
-      var json = base642utf8(data.content);
-      var users = JSON.parse(json);
+
+    function onSuccess(users, sha) {
       window._zxfLogin.users = users;
-      window._zxfLogin._sha = data.sha;
+      window._zxfLogin._sha = sha || '';
       localStorage.setItem('zxf_cached_users', JSON.stringify(users));
       var appCfg = users._app_config;
       if (appCfg && appCfg.serverUrl) {
@@ -240,12 +231,46 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
         } catch(e) {}
       }
       if (callback) callback(null, users);
-    })
-    .catch(function(err) {
+    }
+
+    function onFail(err) {
       console.warn('[ZxfLogin] GitHub fetch failed, using cache:', err.message);
       window._zxfLogin.users = cachedUsers;
       window._zxfLogin._fetchError = err.message;
       if (callback) callback(err, cachedUsers);
+    }
+
+    // 1) Try GitHub API first
+    var apiUrl = 'https://api.github.com/repos/' + cfg.repo + '/contents/' + cfg.path;
+    var headers = { 'Accept': 'application/vnd.github.v3+json' };
+    if (cfg.token) headers['Authorization'] = 'Bearer ' + cfg.token;
+    fetch(apiUrl, { headers: headers })
+    .then(function(resp) {
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp.json();
+    })
+    .then(function(data) {
+      var users = JSON.parse(base642utf8(data.content));
+      onSuccess(users, data.sha);
+    })
+    .catch(function(apiErr) {
+      console.warn('[ZxfLogin] API failed, trying raw CDN:', apiErr.message);
+      // 2) Fallback: raw.githubusercontent.com (no auth, no rate limit)
+      var rawUrl = 'https://raw.githubusercontent.com/' + cfg.repo + '/main/' + cfg.path;
+      fetch(rawUrl)
+      .then(function(resp) {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then(function(users) {
+        console.log('[ZxfLogin] Raw CDN success');
+        onSuccess(users, null);
+      })
+      .catch(function(rawErr) {
+        console.warn('[ZxfLogin] Raw CDN also failed:', rawErr.message);
+        // 3) Both failed, use cache
+        onFail(rawErr);
+      });
     });
   };
 
@@ -647,13 +672,26 @@ async function githubFetchUsers() {
   }
   const cfg = getGithubConfig();
   if (!cfg.repo) throw new Error('GitHub 未配置');
-  const headers = { 'Accept': 'application/vnd.github.v3+json' };
-  if (cfg.token) headers['Authorization'] = 'Bearer ' + cfg.token;
-  const resp = await fetch('https://api.github.com/repos/' + cfg.repo + '/contents/' + cfg.path, { headers });
-  if (!resp.ok) throw new Error('GitHub API ' + resp.status);
-  const data = await resp.json();
-  const users = JSON.parse(ghB642utf8(data.content));
-  return { users, sha: data.sha };
+
+  // Try GitHub API first
+  try {
+    const headers = { 'Accept': 'application/vnd.github.v3+json' };
+    if (cfg.token) headers['Authorization'] = 'Bearer ' + cfg.token;
+    const resp = await fetch('https://api.github.com/repos/' + cfg.repo + '/contents/' + cfg.path, { headers });
+    if (!resp.ok) throw new Error('GitHub API ' + resp.status);
+    const data = await resp.json();
+    const users = JSON.parse(ghB642utf8(data.content));
+    return { users, sha: data.sha };
+  } catch(apiErr) {
+    console.warn('[githubFetchUsers] API failed, trying raw CDN:', apiErr.message);
+    // Fallback: raw.githubusercontent.com (no auth, no rate limit)
+    const rawUrl = 'https://raw.githubusercontent.com/' + cfg.repo + '/main/' + cfg.path;
+    const resp = await fetch(rawUrl);
+    if (!resp.ok) throw new Error('GitHub raw CDN ' + resp.status);
+    const users = await resp.json();
+    console.log('[githubFetchUsers] Raw CDN success');
+    return { users, sha: '' };
+  }
 }
 
 async function githubSaveUsers(users, commitMsg) {
