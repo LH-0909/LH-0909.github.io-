@@ -1215,7 +1215,7 @@ async function syncAppConfigToGithub(token, repo, path, sessionsPath) {
         existing = JSON.parse(ghB642utf8(d.content));
       }
     } catch(e) {}
-    existing._app_config = { repo, path, sessionsPath: sessionsPath || 'sessions.json', serverUrl: serverUrl || '' };
+    existing._app_config = { repo, path, sessionsPath: sessionsPath || 'sessions.json', serverUrl: getServerUrl() };
     const body = {
       message: 'Update app config',
       content: ghUtf82b64(JSON.stringify(existing, null, 2)),
