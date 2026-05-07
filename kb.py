@@ -84,6 +84,66 @@ KB_SCORES = {year: load_json(path) for year, path in SCORE_FILES.items()}
 _score_summary = '  '.join(f'{y}年:{len(KB_SCORES[y])}条' for y in SCORE_YEARS_DESC)
 print(f"📚 学校信息: {len(KB_SCHOOLS)} 条，录取分数: {_score_summary}")
 
+# 加载学科评估
+SUBJECT_EVAL_FILE = os.path.join(os.path.dirname(__file__), "subject_evaluation.json")
+SUBJECT_EVALUATIONS = load_json(SUBJECT_EVAL_FILE) if os.path.exists(SUBJECT_EVAL_FILE) else {}
+
+# 构建学校名称查找索引（normalize后→原始key）
+def _normalize_school_name(name):
+    import re
+    return re.sub(r'[（(][^)）]*[)）]|[\s\-]', '', name)
+
+_SCHOOL_EVAL_INDEX = {}
+for sname in SUBJECT_EVALUATIONS:
+    _SCHOOL_EVAL_INDEX[_normalize_school_name(sname)] = sname
+
+def _lookup_eval(school_name):
+    """查找某所学校的学科评估数据"""
+    n = _normalize_school_name(school_name)
+    if n in _SCHOOL_EVAL_INDEX:
+        return SUBJECT_EVALUATIONS[_SCHOOL_EVAL_INDEX[n]]
+    # 模糊匹配
+    for key, val in _SCHOOL_EVAL_INDEX.items():
+        if key in n or n in key:
+            return SUBJECT_EVALUATIONS[val]
+    return {}
+
+def _match_subject_grade(school_name, major_name):
+    """匹配专业名到学科评估等级，返回如 '计算机科学与技术 A+' 或 ''"""
+    evals = _lookup_eval(school_name)
+    if not evals:
+        return ''
+    # 专业名→学科关键词映射
+    MAJOR_TO_SUBJECT = {
+        '计算机': '计算机科学与技术', '软件': '软件工程', '人工智能': '计算机科学与技术',
+        '电子信息': '电子科学与技术', '通信': '信息与通信工程', '电子': '电子科学与技术',
+        '电气': '电气工程', '自动化': '控制科学与工程',
+        '机械': '机械工程', '车辆': '机械工程',
+        '土木': '土木工程', '建筑': '建筑学',
+        '数学': '数学', '物理': '物理学', '化学': '化学', '生物': '生物学',
+        '临床医学': '临床医学', '口腔': '口腔医学', '护理': '护理学', '药学': '药学',
+        '法学': '法学', '经济': '应用经济学', '金融': '应用经济学', '会计': '工商管理',
+        '工商管理': '工商管理', '管理科学': '管理科学与工程',
+        '中文': '中国语言文学', '汉语言': '中国语言文学', '英语': '外国语言文学',
+        '新闻': '新闻传播学', '传播': '新闻传播学',
+        '材料': '材料科学与工程', '化工': '化学工程与技术',
+        '环境': '环境科学与工程', '食品': '食品科学与工程',
+        '力学': '力学', '航空': '航空宇航科学与技术', '航天': '航空宇航科学与技术',
+        '交通运输': '交通运输工程', '船舶': '船舶与海洋工程',
+        '水利': '水利工程', '测绘': '测绘科学与技术',
+        '地质': '地质资源与地质工程', '矿业': '矿业工程',
+        '农学': '作物学', '植物': '植物保护', '动物': '畜牧学', '兽医': '兽医学',
+        '设计': '设计学', '美术': '美术学',
+    }
+    for mkey, subj in MAJOR_TO_SUBJECT.items():
+        if mkey in major_name:
+            grade = evals.get(subj, '')
+            if grade:
+                return f'{subj} {grade}'
+    return ''
+
+print(f"📊 学科评估: {len(SUBJECT_EVALUATIONS)} 所学校")
+
 # ─── 一分一段表 ───
 import re
 import zipfile
@@ -272,11 +332,9 @@ def _get_score_range_for_year(user_score, user_kelei, target_year):
         return user_score - 25, user_score + 25
     return target_score - 15, target_score + 15  # ±15分用于过滤
 
-# 下面的 search_kb 和 format_kb_results 不动，和之前一样
 def _extract_score(query: str):
     """从查询中提取分数数字，返回 (分数, None) 或 (None, None)"""
     import re
-    # 匹配 "560分" "560" "500-550" 等模式
     m = re.search(r'(\d{3})(?:\s*[-–到至]\s*(\d{3}))?', query)
     if m:
         lo = int(m.group(1))
@@ -292,215 +350,401 @@ def _detect_kelei(query: str):
         return '历史'
     return None
 
+# ─── 学校档次索引 ───
+_SCHOOL_TIER = {}  # normalized_name -> {tier_score, is_985, is_211, is_df, tags, rank}
+
+for _ti in KB_SCHOOLS:
+    _tn = _normalize_school_name(_ti.get('name', ''))
+    if not _tn:
+        continue
+    _tags = _ti.get('tags', '')
+    _is_985 = '985' in _tags
+    _is_211 = '211' in _tags
+    _is_df = '双一流' in _tags
+    _ts = 15 if _is_985 else (8 if _is_211 else (5 if _is_df else 0))
+    _SCHOOL_TIER[_tn] = {
+        'tier_score': _ts, 'is_985': _is_985, 'is_211': _is_211, 'is_df': _is_df,
+        'tags': _tags, 'rank_软科': _ti.get('rank_软科', 999),
+        'subjects': _ti.get('双一流学科', []),
+    }
+
+def _get_tier_score(school_name):
+    """查学校档次加分（0-15），支持模糊匹配"""
+    n = _normalize_school_name(school_name)
+    if n in _SCHOOL_TIER:
+        return _SCHOOL_TIER[n]['tier_score']
+    for key, val in _SCHOOL_TIER.items():
+        if key in n or n in key:
+            return val['tier_score']
+    return 0
+
+def _get_tier_info(school_name):
+    """查学校完整档次信息"""
+    n = _normalize_school_name(school_name)
+    if n in _SCHOOL_TIER:
+        return _SCHOOL_TIER[n]
+    for key, val in _SCHOOL_TIER.items():
+        if key in n or n in key:
+            return val
+    return {'tier_score': 0, 'is_985': False, 'is_211': False, 'is_df': False, 'tags': '', 'rank_软科': 999, 'subjects': []}
+
 def _bigrams(text: str):
-    """生成 2-gram 集合，用于中文匹配"""
     return {text[i:i+2] for i in range(len(text) - 1)}
 
-def _build_search_text_score(item):
-    """构建录取分数条目的搜索文本"""
-    return ' '.join([
-        item.get('院校名称', ''),
-        item.get('专业名称', ''),
-        item.get('科类', ''),
-    ])
-
-def _build_search_text_school(item):
-    """构建学校信息条目的搜索文本"""
-    return ' '.join([
-        item.get('name', ''),
-        item.get('type', ''),
-        item.get('city', ''),
-        item.get('belong', ''),
-    ])
+def _trigrams(text: str):
+    return {text[i:i+3] for i in range(len(text) - 2)}
 
 # ─── 专业别名映射 ───
 SYNONYM_MAP = {
-    # 计算机
     '编程': '计算机 软件 信息 网络工程 数据科学 人工智能 智能科学 信息安全 物联网 数字媒体',
     '码农': '计算机 软件 信息', '程序员': '计算机 软件 信息', '写代码': '计算机 软件 信息',
     'IT': '计算机 软件 信息 网络', '互联网': '计算机 软件 信息',
-    # 医学
     '医生': '临床医学 口腔医学 麻醉学 儿科学 医学影像 中医学 中西医 基础医学 护理学',
     '看病': '临床医学 口腔医学', '临床': '临床医学', '护士': '护理学',
     '药': '药学 中药学 药物制剂',
-    # 金融/经济
     '金融': '金融学 金融工程 经济学 保险学 会计学 财务管理 国际经济 投资学',
     '银行': '金融学 金融工程 经济学', '投资': '金融学 经济学 投资学',
     '赚钱': '金融学 经济学 会计学 财务管理', '理财': '金融学 经济学 会计学',
-    # 师范/教育
     '当老师': '师范 教育学 汉语言文学 数学与应用数学 英语 物理学 化学 生物科学 历史学',
     '教师': '师范 教育学', '考编': '师范 教育学 汉语言文学',
-    # 法学
     '律师': '法学 知识产权', '打官司': '法学',
-    # 考公/体制
     '公务员': '法学 汉语言文学 行政管理 会计学 计算机 经济学',
     '体制内': '法学 汉语言文学 行政管理 会计学',
-    # 电子/半导体
     '芯片': '电子信息 集成电路 微电子 电子科学 通信 光电信息',
     '5G': '电子信息 通信', '半导体': '电子信息 集成电路 微电子',
-    # 建筑/土木
     '盖房子': '土木 建筑学 城乡规划', '建筑': '建筑学 土木 城乡规划',
-    # 设计/艺术
     '画画': '美术学 设计 数字媒体 动画',
-    # 传媒
     '播音': '播音与主持 广播电视', '新闻': '新闻学 广播电视 传播学',
 }
 
 def _expand_query(query: str):
-    """用同义词映射扩展查询词"""
     parts = [query]
     for key, aliases in SYNONYM_MAP.items():
         if key in query:
             parts.append(aliases)
     return ' '.join(parts)
 
-def _score_item(item, q_bigrams):
-    """计算单条记录的 bigram 匹配分"""
-    search_text = _build_search_text_score(item)
-    overlap = len(q_bigrams & _bigrams(search_text))
-    if overlap == 0:
-        return 0
-    school_name = item.get('院校名称', '')
-    school_overlap = len(q_bigrams & _bigrams(school_name))
-    return overlap + school_overlap * 2
+def _score_item_v2(item, query, expanded_query):
+    """多因子综合评分：子串命中(0-20) + 字符重叠(0-10) + bigram(0-5) + 学校档次(0-15) + 学科评估(0-5)"""
+    school = item.get('院校名称', '')
+    major = item.get('专业名称', '')
+    q_chars = set(query)
 
-def search_kb(query: str, top_n: int = 10):
-    # 提取过滤条件
+    # 1. 子串命中 — 最关键维度（0-20）
+    sub_score = 0
+    for word in expanded_query.replace(',', ' ').replace('，', ' ').split():
+        w = word.strip()
+        if len(w) < 2:
+            continue
+        if w in school:
+            sub_score += 3
+        if w in major:
+            sub_score += 4
+    sub_score = min(sub_score, 20)
+
+    # 2. 字符集重叠（0-10）
+    char_score = 0
+    if q_chars:
+        char_score = (len(q_chars & set(school)) / len(q_chars)) * 6 + (len(q_chars & set(major)) / len(q_chars)) * 4
+    char_score = min(char_score, 10)
+
+    # 3. Bigram 模糊匹配（0-5）
+    q_bigrams = _bigrams(expanded_query)
+    bg_score = len(q_bigrams & _bigrams(school)) * 0.2 + len(q_bigrams & _bigrams(major)) * 0.4
+    bg_score = min(bg_score, 5)
+
+    # 4. 学校档次（0-15）
+    tier = _get_tier_score(school)
+
+    total = sub_score + char_score + bg_score + tier
+    if total == 0:
+        return 0
+
+    # 5. 学科评估加分（0-5）— 只在有相关性时
+    eval_bonus = 0
+    grade = _match_subject_grade(school, major)
+    if grade:
+        if 'A+' in grade:
+            eval_bonus = 5
+        elif 'A' in grade and 'A-' not in grade:
+            eval_bonus = 4
+        elif 'A-' in grade:
+            eval_bonus = 3
+        elif 'B+' in grade:
+            eval_bonus = 2
+
+    return total + eval_bonus
+
+def search_kb(query: str, top_n: int = 21):
     score_lo, score_hi = _extract_score(query)
     kelei = _detect_kelei(query)
-
-    # 扩展查询 + bigram
     expanded = _expand_query(query)
-    q_bigrams = _bigrams(expanded)
 
-    # ─── 分别搜两年数据，按 (院校, 专业, 科类) 合并 ───
-    merged = {}  # key: (院校名称, 专业名称, 科类) -> {2024: {item, score}, 2025: {...}}
-    key_order = []
+    # 标签过滤
+    tag_filter = None
+    for tag in ['985', '211', '双一流']:
+        if tag in query:
+            tag_filter = tag
+            break
 
-    for year in SCORE_YEARS_DESC:  # 最新年份优先
-        # 位次校准：用户分数用一分一段换算为目标年份的等价分数段
+    SEARCH_MARGIN = 40  # 分数搜索窗口，覆盖冲稳保
+
+    all_matches = []
+
+    for year in SCORE_YEARS_DESC:
         if score_lo is not None and kelei:
             yr_lo, yr_hi = _get_score_range_for_year(score_lo, kelei, year)
+            yr_lo = (yr_lo or score_lo) - SEARCH_MARGIN
+            yr_hi = (yr_hi or score_lo) + SEARCH_MARGIN
+        elif score_lo is not None:
+            yr_lo, yr_hi = score_lo - SEARCH_MARGIN, score_lo + SEARCH_MARGIN
         else:
-            yr_lo, yr_hi = (score_lo - 25) if score_lo else None, (score_hi + 25) if score_hi else None
+            yr_lo, yr_hi = None, None
 
         for item in KB_SCORES.get(year, []):
-            # 科类过滤
             if kelei and item.get('科类', '') != kelei:
                 continue
-            # 分数段过滤（位次校准后）
-            if yr_lo is not None:
-                try:
-                    item_score = float(item.get('最低分', 0))
-                except (ValueError, TypeError):
-                    item_score = 0
-                if item_score < yr_lo or item_score > yr_hi:
-                    continue
 
-            match = _score_item(item, q_bigrams)
-            if match == 0:
+            try:
+                item_score = float(item.get('最低分', 0))
+            except (ValueError, TypeError):
+                item_score = 0
+
+            if yr_lo is not None and (item_score < yr_lo or item_score > yr_hi):
                 continue
 
-            school = item.get('院校名称', '')
-            major = item.get('专业名称', '')
-            cat = item.get('科类', '')
-            key = (school, major, cat)
+            if tag_filter:
+                tier_info = _get_tier_info(item.get('院校名称', ''))
+                if tag_filter == '985' and not tier_info['is_985']:
+                    continue
+                if tag_filter == '211' and not tier_info['is_211']:
+                    continue
+                if tag_filter == '双一流' and not tier_info['is_df']:
+                    continue
 
-            if key not in merged:
-                merged[key] = {}
-                key_order.append(key)
-            merged[key][year] = {'item': item, 'score': match}
+            sc = _score_item_v2(item, query, expanded)
+            if sc == 0:
+                continue
 
-    # ─── 计算综合分 ───
+            all_matches.append((sc, year, item))
+
+    # ─── 按 (院校, 专业, 科类) 合并两年数据 ───
+    merged = {}
+    for sc, year, item in all_matches:
+        key = (item.get('院校名称', ''), item.get('专业名称', ''), item.get('科类', ''))
+        if key not in merged:
+            merged[key] = {}
+        if year not in merged[key] or sc > merged[key][year]['score']:
+            merged[key][year] = {'item': item, 'score': sc}
+
+    # 综合分 = 2025*1.5 + 2024*1.0 + 学校档次*0.3
     scored = []
-    for key in key_order:
-        entry = merged[key]
+    for key, entry in merged.items():
         s25 = entry.get(2025, {}).get('score', 0)
         s24 = entry.get(2024, {}).get('score', 0)
-        total = s25 * 1.5 + s24
+        tier = _get_tier_score(key[0])
+        total = s25 * 1.5 + s24 + tier * 0.3
         scored.append((total, key, entry))
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    # ─── 构建结果（附位次） ───
-    results = []
-    for _, key, entry in scored[:top_n]:
+    # ─── 冲稳保分层 ───
+    if score_lo is not None and scored:
+        冲, 稳, 保 = [], [], []
+        for item_tuple in scored:
+            _, key, entry = item_tuple
+            item_2025 = entry.get(2025, {}).get('item')
+            item_2024 = entry.get(2024, {}).get('item')
+            ref = item_2025 or item_2024
+            if not ref:
+                continue
+            try:
+                ref_score = float(ref.get('最低分', 0))
+            except (ValueError, TypeError):
+                continue
+
+            if ref_score > score_lo + 5:
+                冲.append(item_tuple)
+            elif ref_score >= score_lo - 10:
+                稳.append(item_tuple)
+            else:
+                保.append(item_tuple)
+
+        results = []
+        for stratum, items in [('冲', 冲), ('稳', 稳), ('保', 保)]:
+            for total, key, entry in items[:7]:
+                results.append((total, key, entry, stratum))
+    else:
+        results = [(total, key, entry, '') for total, key, entry in scored[:top_n]]
+
+    # ─── 构建输出 ───
+    output = []
+    for _, key, entry, stratum in results:
         school, major, cat = key
-        result = {'类型': '录取分数', '院校名称': school, '专业名称': major, '科类': cat}
+        result = {'类型': '录取分数', '院校名称': school, '专业名称': major, '科类': cat, '档次': stratum}
         for year in SCORE_YEARS_ASC:
             if year in entry:
                 score_val = entry[year]['item'].get('最低分', '')
                 result[f'最低分_{year}'] = score_val
-                # 附上位次
                 try:
                     rank_val = score_to_rank(int(float(score_val)), year, cat)
                     if rank_val:
                         result[f'位次_{year}'] = rank_val
                 except (ValueError, TypeError):
                     pass
-        results.append(result)
+        output.append(result)
 
     # ─── 学校信息 ───
     school_results = []
+    q_bigrams = _bigrams(expanded)
     for item in KB_SCHOOLS:
-        overlap = len(q_bigrams & _bigrams(_build_search_text_school(item)))
-        if overlap > 0:
-            school_results.append((overlap, item))
+        search_text = ' '.join([item.get('name', ''), item.get('type', ''), item.get('city', ''), item.get('tags', '')])
+        overlap = len(q_bigrams & _bigrams(search_text))
+        if overlap <= 0:
+            continue
+        boost = 2.0 if (tag_filter and tag_filter in item.get('tags', '')) else 1.0
+        school_results.append((overlap * boost + _get_tier_score(item.get('name', '')) * 0.3, item))
     school_results.sort(key=lambda x: x[0], reverse=True)
-    for _, item in school_results[:3]:
-        results.append({'类型': '学校信息', **item})
+    for _, item in school_results[:5]:
+        output.append({'类型': '学校信息', **item})
 
-    return results
+    return output
 
-def format_kb_results(results):
+def _rank_trend_desc(rk24, rk25):
+    """描述位次变化趋势，返回说明文字"""
+    try:
+        r24, r25 = int(rk24), int(rk25)
+        diff = r24 - r25  # 正值=位次进步(排名数字变小), 负值=位次退步
+        if abs(diff) <= 300:
+            return f'位次稳(两年差{abs(diff)}名)'
+        elif diff > 0:
+            return f'位次进步{diff}名(变热门)'
+        else:
+            return f'位次退步{abs(diff)}名(变冷)'
+    except (ValueError, TypeError):
+        return ''
+
+def user_score_context(query: str):
+    """从查询中提取分数/科类，换算为位次，返回上下文文字"""
+    score_lo, _ = _extract_score(query)
+    kelei = _detect_kelei(query)
+    if score_lo is None:
+        return ''
+    if not YIFENYIDANG:
+        return f'用户提到{score_lo}分，但一分一段表未加载，无法换算位次。'
+
+    # 用最近年份换算
+    base_year = max(YIFENYIDANG.keys())
+    for k in [kelei, '物理', '历史']:
+        if not k:
+            continue
+        rank = score_to_rank(score_lo, base_year, k)
+        if rank:
+            return f'用户分数{score_lo}({k}) ≈ {base_year}年全省位次约{rank}名。注意：2024=前年, 2025=去年, 2026=今年（当前高考季），用前年去年位次走势推断今年。'
+    return f'用户提到{score_lo}分（科类不明，无法精确换算位次）。'
+
+def format_kb_results(results, query=''):
     if not results:
         return ''
 
     score_items = [r for r in results if r.get('类型') == '录取分数']
     school_items = [r for r in results if r.get('类型') == '学校信息']
 
-    # 用户位次参考（取最高分年）
-    user_rank_hint = ''
-    if score_items:
-        for item in score_items:
-            for year in SCORE_YEARS_DESC:
-                rk = item.get(f'位次_{year}', '')
-                if rk:
-                    user_rank_hint = f'（位次=全省排名，位次越小数越稳）'
-                    break
-            if user_rank_hint:
-                break
-
     parts = []
-    if score_items:
-        parts.append(f'【河北省录取数据 2024→2025对比 {user_rank_hint}】')
-        for i, item in enumerate(score_items, 1):
-            school = item.get('院校名称', '?')
-            major = item.get('专业名称', '?')
-            cat = item.get('科类', '')
-            s24 = item.get('最低分_2024', '')
-            s25 = item.get('最低分_2025', '')
-            rk24 = item.get('位次_2024', '')
-            rk25 = item.get('位次_2025', '')
 
-            line = f'{i}. {school} · {major}（{cat}）'
-            if s24 and s25:
-                try:
-                    diff = int(float(s25)) - int(float(s24))
-                    arrow = '↑' + str(diff) if diff > 0 else ('↓' + str(abs(diff)) if diff < 0 else '→')
-                except (ValueError, TypeError):
-                    arrow = ''
-                line += f' 2024:{s24}分(位{rk24}) → 2025:{s25}分(位{rk25}) {arrow}'
-            elif s25:
-                line += f' 2025:{s25}分(位{rk25})（新增）'
-            else:
-                line += f' 2024:{s24}分(位{rk24})'
+    # 用户分数→位次上下文
+    user_ctx = user_score_context(query) if query else ''
+    if user_ctx:
+        parts.append(f'【用户位次参考】{user_ctx}')
+        parts.append('')
+
+    if score_items:
+        parts.append('【河北省录取数据 前年(2024)→去年(2025)对比 · 推断今年(2026)趋势】')
+        parts.append('铁律：前年=2024, 去年=2025, 今年=2026。提到分数必须带年份，推测今年必须说"预估"。')
+        parts.append('')
+
+        # 按档次分组输出
+        strata_order = [('冲', '🔴 冲一冲（高于你分数，需要够一够）'),
+                        ('稳', '🟡 稳一稳（分数接近，大概率能上）'),
+                        ('保', '🟢 保一保（低于你分数，稳稳能上）'),
+                        ('', '📋 匹配结果')]
+        idx = 0
+        for stratum_tag, stratum_label in strata_order:
+            group = [it for it in score_items if it.get('档次', '') == stratum_tag]
+            if not group:
+                continue
+            parts.append(stratum_label)
+            for item in group:
+                idx += 1
+                school = item.get('院校名称', '?')
+                major = item.get('专业名称', '?')
+                cat = item.get('科类', '')
+                s24 = item.get('最低分_2024', '')
+                s25 = item.get('最低分_2025', '')
+                rk24 = item.get('位次_2024', '')
+                rk25 = item.get('位次_2025', '')
+
+                # 学校档次标签
+                tier_info = _get_tier_info(school)
+                tier_tags = tier_info.get('tags', '')
+                tier_badges = []
+                if tier_info.get('is_985'):
+                    tier_badges.append('985')
+                if tier_info.get('is_211'):
+                    tier_badges.append('211')
+                elif tier_info.get('is_df'):
+                    tier_badges.append('双一流')
+                badgestr = (' [' + '·'.join(tier_badges) + ']') if tier_badges else ''
+
+                line = f'{idx}. {school}{badgestr} · {major}（{cat}）'
+                if s24 and s25:
+                    try:
+                        diff_score = int(float(s25)) - int(float(s24))
+                        arrow = '↑' + str(diff_score) if diff_score > 0 else ('↓' + str(abs(diff_score)) if diff_score < 0 else '→')
+                    except (ValueError, TypeError):
+                        arrow = ''
+                    trend = _rank_trend_desc(rk24, rk25)
+                    line += f' 前年2024:{s24}分(位{rk24}) → 去年2025:{s25}分(位{rk25}) {arrow}分'
+                    if trend:
+                        line += f' | {trend}'
+                elif s25:
+                    line += f' 去年2025:{s25}分(位{rk25})（仅去年有数据，注意无前年对比）'
+                else:
+                    line += f' 前年2024:{s24}分(位{rk24})（仅前年有数据，注意无去年对比）'
+
+            # 附学科评估等级
+            grade = _match_subject_grade(school, major)
+            if grade:
+                line += f' [学科评估: {grade}]'
             parts.append(line)
 
     if school_items:
         parts.append('')
         parts.append('【相关院校背景】')
         for i, item in enumerate(school_items, 1):
-            parts.append(f'{i}. {item.get("name", "")} | {item.get("type", "")} | {item.get("city", "")} | {item.get("level", "")}')
+            name = item.get('name', '')
+            tags = item.get('tags', '')
+            rank = item.get('rank_软科', 999)
+            subjects = item.get('双一流学科', [])
+            # 查学科评估顶尖学科
+            evals = _lookup_eval(name)
+            top_subjects = [f'{s} {g}' for s, g in sorted(evals.items(), key=lambda x: (
+                0 if x[1].startswith('A+') else 1 if x[1].startswith('A') else 2 if x[1].startswith('A-') else 3
+            ))[:3] if g.startswith('A')]
+
+            line_parts = [name]
+            if tags:
+                line_parts.append(f'[{tags}]')
+            line_parts.append(item.get('type', ''))
+            line_parts.append(item.get('city', ''))
+            if rank < 999:
+                line_parts.append(f'软科#{rank}')
+            line = ' | '.join(line_parts)
+
+            if subjects:
+                line += f'\n  双一流学科: {", ".join(subjects[:5])}'
+            if top_subjects:
+                line += f'\n  顶尖学科: {", ".join(top_subjects)}'
+            parts.append(line)
 
     return '\n'.join(parts)
