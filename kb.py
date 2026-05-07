@@ -98,14 +98,20 @@ for sname in SUBJECT_EVALUATIONS:
     _SCHOOL_EVAL_INDEX[_normalize_school_name(sname)] = sname
 
 def _lookup_eval(school_name):
-    """查找某所学校的学科评估数据"""
+    """查找某所学校的学科评估数据，带缓存"""
     n = _normalize_school_name(school_name)
+    if n in _EVAL_CACHE:
+        return _EVAL_CACHE[n]
     if n in _SCHOOL_EVAL_INDEX:
-        return SUBJECT_EVALUATIONS[_SCHOOL_EVAL_INDEX[n]]
-    # 模糊匹配
+        result = SUBJECT_EVALUATIONS[_SCHOOL_EVAL_INDEX[n]]
+        _EVAL_CACHE[n] = result
+        return result
     for key, val in _SCHOOL_EVAL_INDEX.items():
         if key in n or n in key:
-            return SUBJECT_EVALUATIONS[val]
+            result = SUBJECT_EVALUATIONS[val]
+            _EVAL_CACHE[n] = result
+            return result
+    _EVAL_CACHE[n] = {}
     return {}
 
 def _match_subject_grade(school_name, major_name):
@@ -368,25 +374,40 @@ for _ti in KB_SCHOOLS:
         'subjects': _ti.get('双一流学科', []),
     }
 
+_TIER_CACHE = {}
+_EVAL_CACHE = {}
+
 def _get_tier_score(school_name):
-    """查学校档次加分（0-15），支持模糊匹配"""
+    """查学校档次加分（0-15），带缓存"""
     n = _normalize_school_name(school_name)
+    if n in _TIER_CACHE:
+        return _TIER_CACHE[n]
     if n in _SCHOOL_TIER:
-        return _SCHOOL_TIER[n]['tier_score']
+        _TIER_CACHE[n] = _SCHOOL_TIER[n]['tier_score']
+        return _TIER_CACHE[n]
     for key, val in _SCHOOL_TIER.items():
         if key in n or n in key:
+            _TIER_CACHE[n] = val['tier_score']
             return val['tier_score']
+    _TIER_CACHE[n] = 0
     return 0
 
 def _get_tier_info(school_name):
-    """查学校完整档次信息"""
+    """查学校完整档次信息，带缓存"""
     n = _normalize_school_name(school_name)
+    cache_key = '__info__' + n
+    if cache_key in _TIER_CACHE:
+        return _TIER_CACHE[cache_key]
     if n in _SCHOOL_TIER:
+        _TIER_CACHE[cache_key] = _SCHOOL_TIER[n]
         return _SCHOOL_TIER[n]
     for key, val in _SCHOOL_TIER.items():
         if key in n or n in key:
+            _TIER_CACHE[cache_key] = val
             return val
-    return {'tier_score': 0, 'is_985': False, 'is_211': False, 'is_df': False, 'tags': '', 'rank_软科': 999, 'subjects': []}
+    default = {'tier_score': 0, 'is_985': False, 'is_211': False, 'is_df': False, 'tags': '', 'rank_软科': 999, 'subjects': []}
+    _TIER_CACHE[cache_key] = default
+    return default
 
 def _bigrams(text: str):
     return {text[i:i+2] for i in range(len(text) - 1)}
@@ -487,7 +508,7 @@ def search_kb(query: str, top_n: int = 21):
             tag_filter = tag
             break
 
-    SEARCH_MARGIN = 40  # 分数搜索窗口，覆盖冲稳保
+    SEARCH_MARGIN = 30  # 分数搜索窗口，覆盖冲稳保
 
     all_matches = []
 
