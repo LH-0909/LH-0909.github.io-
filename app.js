@@ -1268,9 +1268,7 @@ async function callAPI(userMsg) {
     let sys = isFirstMsg ? SYSTEM_PROMPT+'\n\n这是你和用户的第一条对话。免责声明简短说一句即可，后续不再提。' : SYSTEM_PROMPT;
     if (kbContext) { sys += '\n\n【以下是你专属的录取数据库，用张雪峰第一人称解读，禁止说"根据数据"】\n' + kbContext; }
     if (kbMeta && kbMeta.province && !kbMeta.province_available) {
-      sys += '
-
-⚠️ 重要提醒（必须复述给用户）：当前数据库仅有河北省的录取数据，用户问的是【' + kbMeta.province + '】省。以下分数线全是河北省的，你必须第一时间告知用户这个事实，提醒用户去查本省教育考试院官网。河北的位次仅作横向参考，绝对不能用河北分数直接套其他省的志愿。';
+      sys += '\n\n⚠️ 重要提醒（必须复述给用户）：当前数据库仅有河北省的录取数据，用户问的是【' + kbMeta.province + '】省。以下分数线全是河北省的，你必须第一时间告知用户这个事实，提醒用户去查本省教育考试院官网。河北的位次仅作横向参考，绝对不能用河北分数直接套其他省的志愿。';
     }
     const s = getCurrentSession();
     const history = s ? s.messages.map(m=>({role:m.role==='user'?'user':'assistant',content:m.content})) : [];
