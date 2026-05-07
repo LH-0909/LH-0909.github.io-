@@ -10,9 +10,13 @@ from flask import Flask, request, jsonify
 from kb import search_kb, format_kb_results
 from flask_cors import CORS
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='.', static_url_path='')
 CORS(app)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+
+@app.route('/')
+def index():
+    return app.send_static_file('index.html')
 
 # ─── Config ───
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', '')      # GitHub Token（必填）
@@ -213,6 +217,7 @@ def kb_search():
     formatted = format_kb_results(results, query, meta)
     logging.info(f'[KB] query="{query[:80]}" province={meta.get("province")} '
                  f'kelei={meta.get("kelei")} score={meta.get("score")} '
+                 f'user_rank={meta.get("user_rank")} rank_via={meta.get("rank_via")} '
                  f'results={len(results)} available={meta.get("province_available")}')
     return jsonify({
         'ok': True,

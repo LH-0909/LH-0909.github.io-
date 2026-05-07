@@ -19,6 +19,30 @@ SCORE_REMOTE_PATHS = {
     2025: "hebei_2025_scores.json",
 }
 
+# ─── 自动扫描目录中额外年份的数据文件 ───
+import glob as _glob
+_base_dir = os.path.dirname(__file__)
+# 扫描 hebei_XXXX_scores.json（如 hebei_2026_scores.json）
+for _f in _glob.glob(os.path.join(_base_dir, "hebei_*_scores.json")):
+    _m = re.match(r'hebei_(\d{4})_scores\.json', os.path.basename(_f))
+    if _m:
+        _yr = int(_m.group(1))
+        if _yr not in SCORE_FILES:
+            SCORE_FILES[_yr] = _f
+            SCORE_REMOTE_PATHS[_yr] = os.path.basename(_f)
+            print(f"🔍 自动发现 {_yr} 年录取数据: {os.path.basename(_f)}")
+# 扫描 *一分一段*.xlsx（如 2026河北一分一段.xlsx）
+for _f in _glob.glob(os.path.join(_base_dir, "*一分一段*.xlsx")):
+    _m = re.search(r'(\d{4})', os.path.basename(_f))
+    if _m:
+        _yr = int(_m.group(1))
+        if _yr not in YIFENYIDANG_FILES:
+            YIFENYIDANG_FILES[_yr] = _f
+            YIFENYIDANG_JSON[_yr] = _f.replace('.xlsx', '.json')
+            YIFENYIDANG_YEARS.append(_yr)
+            YIFENYIDANG_YEARS.sort()
+            print(f"🔍 自动发现 {_yr} 年一分一段表: {os.path.basename(_f)}")
+
 def download_file_from_github(repo, path, token=''):
     """从 GitHub 下载文件内容，返回 (内容文本, sha)"""
     url = f"https://api.github.com/repos/{repo}/contents/{path}"
@@ -83,6 +107,40 @@ KB_SCHOOLS = load_json(SCHOOL_FILE)
 KB_SCORES = {year: load_json(path) for year, path in SCORE_FILES.items()}
 _score_summary = '  '.join(f'{y}年:{len(KB_SCORES[y])}条' for y in SCORE_YEARS_DESC)
 print(f"📚 学校信息: {len(KB_SCHOOLS)} 条，录取分数: {_score_summary}")
+
+# 加载专业介绍数据库
+MAJOR_DB_FILE = os.path.join(os.path.dirname(__file__), "majors.json")
+MAJOR_DB = load_json(MAJOR_DB_FILE) if os.path.exists(MAJOR_DB_FILE) else []
+if MAJOR_DB:
+    # 构建别名→专业条目 索引
+    _MAJOR_ALIAS_INDEX = {}
+    for _mj in MAJOR_DB:
+        _name = _mj.get('name', '')
+        if _name:
+            _MAJOR_ALIAS_INDEX[_name] = _mj
+        for _al in _mj.get('aliases', []):
+            if _al not in _MAJOR_ALIAS_INDEX:
+                _MAJOR_ALIAS_INDEX[_al] = _mj
+    print(f"📖 专业介绍数据库: {len(MAJOR_DB)} 个专业, {len(_MAJOR_ALIAS_INDEX)} 个别名")
+else:
+    _MAJOR_ALIAS_INDEX = {}
+    print("⚠ 未找到 majors.json，专业介绍功能不可用")
+
+def _match_majors(query: str):
+    """检测查询中提到的专业，返回匹配的专业条目列表（按别名长度降序，长匹配优先）"""
+    matched = []
+    for alias, entry in _MAJOR_ALIAS_INDEX.items():
+        if alias in query:
+            matched.append((len(alias), entry))
+    # 去重，保留最长匹配
+    seen = set()
+    result = []
+    for _, entry in sorted(matched, key=lambda x: x[0], reverse=True):
+        name = entry.get('name', '')
+        if name not in seen:
+            seen.add(name)
+            result.append(entry)
+    return result[:3]  # 最多返回3个匹配的专业
 
 # 加载学科评估
 SUBJECT_EVAL_FILE = os.path.join(os.path.dirname(__file__), "subject_evaluation.json")
@@ -357,14 +415,74 @@ def _extract_province(query: str):
     return None, True  # 未提省份，不触发警告
 
 def _extract_score(query: str):
-    """从查询中提取分数数字，返回 (分数, None) 或 (None, None)"""
+    """从查询中提取分数数字，返回 (分数下限, 分数上限) 或 (None, None)。
+    支持：529分 / 大概560左右 / 560-580 / 560到580 / 570上下
+    排除紧跟在"排名"/"位次"后面的数字（那是排名不是分数）。"""
     import re
-    m = re.search(r'(\d{3})(?:\s*[-–到至]\s*(\d{3}))?', query)
+    # 排除排名数字
+    rank_m = re.search(r'(?:位次|排名|省排)\s*(\d+)', query)
+    rank_prefix = rank_m.group(0) if rank_m else ''
+
+    # 范围模式：560-580 / 560到580 / 560~580
+    m = re.search(r'(\d{3})\s*(?:[-–到至~]\s*(\d{3}))', query)
     if m:
+        s = m.group(0)
+        if rank_prefix and rank_prefix in s:
+            pass  # skip: this number belongs to a rank keyword
+        else:
+            lo, hi = int(m.group(1)), int(m.group(2))
+            return min(lo, hi), max(lo, hi)
+
+    # 单分模式：529分 / 大概560左右 / 570上下
+    m = re.search(r'(?:大概|差不多|大约|估?[计着]|可能)?\s*(\d{3})\s*(?:分|左右|上下)?', query)
+    if m:
+        s = m.group(0)
+        # 排除排名
+        if rank_prefix and rank_prefix in query[max(0,m.start()-10):m.end()]:
+            return None, None
         lo = int(m.group(1))
-        hi = int(m.group(2)) if m.group(2) else lo
-        return min(lo, hi), max(lo, hi)
+        # "大概560左右" "570上下" → 仍然单分，但扩大搜索窗口（在search_kb中用）
+        return lo, lo
     return None, None
+
+def _extract_rank(query: str):
+    """从查询中提取位次/排名，返回 (排名数字) 或 None
+    匹配模式：位次8000 / 排名8000 / 省排8000 / 排8000名 / 第8000名 / 8000名（≥4位数字）"""
+    import re
+    # 带关键词的：位次/排名/省排 + 数字
+    m = re.search(r'(?:位次|排名|省排)\s*(\d{1,6})', query)
+    if m:
+        return int(m.group(1))
+    # 排/第 + 数字 + 名
+    m = re.search(r'(?:排|第)\s*(\d{1,6})\s*名', query)
+    if m:
+        return int(m.group(1))
+    # 4位及以上数字后跟"名"（4位数字不可能是分数，安全）
+    m = re.search(r'(\d{4,6})\s*名', query)
+    if m:
+        return int(m.group(1))
+    return None
+
+def _detect_admission_type(query: str):
+    """检测查询中的特殊招生类型：提前批/国家专项/地方专项/高校专项/强基计划"""
+    types = []
+    if any(w in query for w in ['提前批', '提前批次']):
+        types.append('提前批')
+    if any(w in query for w in ['国家专项', '国家专项计划']):
+        types.append('国家专项')
+    if any(w in query for w in ['地方专项', '地方专项计划']):
+        types.append('地方专项')
+    if any(w in query for w in ['高校专项', '高校专项计划']):
+        types.append('高校专项')
+    if any(w in query for w in ['强基计划', '强基']):
+        types.append('强基计划')
+    if any(w in query for w in ['综合评价', '三位一体']):
+        types.append('综合评价')
+    if any(w in query for w in ['公费师范', '公费师范生']):
+        types.append('公费师范生')
+    if any(w in query for w in ['免费医学', '免费医学生', '定向医学生']):
+        types.append('免费医学生')
+    return types if types else None
 
 def _detect_kelei(query: str):
     """检测查询中的科类倾向"""
@@ -391,6 +509,76 @@ for _ti in KB_SCHOOLS:
         'tags': _tags, 'rank_软科': _ti.get('rank_软科', 999),
         'subjects': _ti.get('双一流学科', []),
     }
+
+# ─── 学校→城市索引（用于城市偏好检测）───
+_SCHOOL_CITY = {}  # normalized_name -> city
+for _ti in KB_SCHOOLS:
+    _tn = _normalize_school_name(_ti.get('name', ''))
+    _city = _ti.get('city', '')
+    if _tn and _city:
+        _SCHOOL_CITY[_tn] = _city
+
+# 主要城市列表（高考热门目的地）
+_CITY_LIST = [
+    '北京', '上海', '广州', '深圳', '天津', '重庆',
+    '南京', '杭州', '成都', '武汉', '西安', '长沙',
+    '青岛', '大连', '厦门', '苏州', '合肥', '济南',
+    '哈尔滨', '长春', '沈阳', '郑州', '南昌', '福州',
+    '昆明', '贵阳', '南宁', '海口', '兰州', '银川',
+    '西宁', '拉萨', '乌鲁木齐', '石家庄', '太原', '呼和浩特',
+    '珠海', '东莞', '佛山', '宁波', '无锡', '常州',
+    '徐州', '温州', '烟台', '威海', '秦皇岛', '保定',
+    '廊坊', '唐山', '邯郸', '沧州', '张家口', '承德',
+    '衡水', '邢台',
+]
+def _extract_city(query: str):
+    """检测查询中用户想去的城市，返回 (城市名, 原始提及) 或 (None, None)"""
+    # 带意图的模式："想去北京""北京上学""去北京读""北京那边""报北京"
+    import re
+    m = re.search(r'(?:想去?|去|报|在|留|到)\s*([一-鿿]{2,4})\s*(?:上学|读|那边|这边|的大学|地区|城市)?', query)
+    if m:
+        city = m.group(1)
+        if city in _CITY_LIST:
+            return city
+    # 直接匹配城市名
+    for city in _CITY_LIST:
+        if city in query:
+            return city
+    return None
+
+# ─── 双一流学科→学校 反向索引（用于"计算机双一流学科有哪些学校"）───
+_SUBJECT_INDEX = {}  # 学科关键词 → set of normalized school names
+for _ti in KB_SCHOOLS:
+    _tn = _normalize_school_name(_ti.get('name', ''))
+    _subjects = _ti.get('双一流学科', [])
+    if not _tn or not _subjects:
+        continue
+    for _subj in _subjects:
+        # 建索引：学科全名 + 2-4字子串
+        _subj_clean = _subj.strip()
+        _SUBJECT_INDEX.setdefault(_subj_clean, set()).add(_tn)
+        for _l in range(2, min(len(_subj_clean), 5)):
+            for _i in range(len(_subj_clean) - _l + 1):
+                _SUBJECT_INDEX.setdefault(_subj_clean[_i:_i+_l], set()).add(_tn)
+print(f"📖 双一流学科索引: {len(_SUBJECT_INDEX)} 个关键词")
+
+def _detect_subject_search(query: str):
+    """检测用户是否在问双一流学科相关问题"""
+    if any(w in query for w in ['双一流学科', '一流学科', '一流专业', '双一流专业', '双一流建设']):
+        return True
+    return False
+
+def _get_subject_schools(keyword: str):
+    """根据学科关键词查找哪些学校有该双一流学科，返回学校名列表"""
+    # 精确匹配
+    if keyword in _SUBJECT_INDEX:
+        return list(_SUBJECT_INDEX[keyword])
+    # 模糊：包含
+    matched = set()
+    for subj, schools in _SUBJECT_INDEX.items():
+        if keyword in subj:
+            matched |= schools
+    return list(matched) if matched else []
 
 _TIER_CACHE = {}
 _EVAL_CACHE = {}
@@ -546,9 +734,9 @@ def _expand_query(query: str):
             parts.append(aliases)
     return ' '.join(parts)
 
-def _score_item_v2(item, query, expanded_query, pre_bigrams=None, pre_trigrams=None):
-    """多因子综合评分：子串命中(0-30) + 字符重叠(0-5) + bigram(0-5) + trigram(0-8) + 学校档次(0-6) + 学科评估(0-5)
-    最低阈值 = 5，低于此分直接丢弃。
+def _score_item_v2(item, query, expanded_query, pre_bigrams=None, pre_trigrams=None, score_lo=None, target_city=None, subject_schools=None):
+    """多因子综合评分：子串命中(0-30) + 字符重叠(0-5) + bigram(0-5) + trigram(0-8) + 学校档次(0-6) + 城市偏好(0-10) + 双一流学科匹配(0-15) + 学科评估(0-5) + 分数接近度(0-20)
+    最低阈值 = 5（有分数+科类时降为0，因为分数区间已过滤）。
     支持预计算的 bi/trigram 集合加速（避免每次查询重复计算）。"""
     school = item.get('院校名称', '')
     major = item.get('专业名称', '')
@@ -603,9 +791,36 @@ def _score_item_v2(item, query, expanded_query, pre_bigrams=None, pre_trigrams=N
     # 映射到 0-6 区间: 985→6, 211→3, 双一流→2, 其他→0
     tier = 6 if tier >= 15 else (3 if tier >= 8 else (2 if tier >= 5 else 0))
 
-    total = sub_score + exact_bonus + char_score + bg_score + tg_score + tier
-    if total == 0:
-        return 0
+    # 4.5. 城市偏好（0-10）— 用户指定了目标城市
+    city_bonus = 0
+    if target_city:
+        school_norm = _normalize_school_name(school)
+        school_city = _SCHOOL_CITY.get(school_norm, '')
+        if not school_city:
+            # 模糊匹配：用学校档次索引的查找逻辑
+            for key, city in _SCHOOL_CITY.items():
+                if key in school_norm or school_norm in key:
+                    school_city = city
+                    break
+        if school_city == target_city:
+            city_bonus = 10
+        elif target_city in school_city or school_city in target_city:
+            city_bonus = 5
+
+    # 4.6. 双一流学科匹配（0-15）— 学校双一流学科命中用户查询关键词
+    subject_bonus = 0
+    if subject_schools:
+        school_norm = _normalize_school_name(school)
+        if school_norm in subject_schools:
+            subject_bonus = 15
+        else:
+            # 模糊匹配
+            for ss in subject_schools:
+                if ss in school_norm or school_norm in ss:
+                    subject_bonus = 10
+                    break
+
+    total = sub_score + exact_bonus + char_score + bg_score + tg_score + tier + city_bonus + subject_bonus
 
     # 5. 学科评估加分（0-5）— 只在有相关性时
     eval_bonus = 0
@@ -620,14 +835,67 @@ def _score_item_v2(item, query, expanded_query, pre_bigrams=None, pre_trigrams=N
         elif 'B+' in grade:
             eval_bonus = 2
 
-    return total + eval_bonus
+    # 6. 分数接近度（0-20）— 用户给了具体分数时，越接近得分越高
+    proximity = 0
+    if score_lo is not None:
+        try:
+            item_score = float(item.get('最低分', 0))
+            proximity = max(0, 20 - abs(item_score - score_lo))
+        except (ValueError, TypeError):
+            pass
 
-MIN_RELEVANCE_THRESHOLD = 5  # 最低相关性阈值，低于此分丢弃
+    return total + eval_bonus + proximity
+
+MIN_RELEVANCE_THRESHOLD = 5  # 最低相关性阈值，低于此分丢弃（有分数+科类时降为0）
 
 def search_kb(query: str, top_n: int = 21):
     score_lo, score_hi = _extract_score(query)
     kelei = _detect_kelei(query)
     province, province_available = _extract_province(query)
+    target_city = _extract_city(query)  # 用户想去的城市
+    admission_type = _detect_admission_type(query)  # 提前批/专项计划等
+    # 双一流学科搜索
+    subject_mode = _detect_subject_search(query)
+    subject_schools = set()  # 匹配到双一流学科的学校
+    user_rank = None  # 用户直接提供的位次
+    rank_via = None   # 位次反推的基准年份
+
+    # ─── 用户直接给位次而非分数？ ───
+    if score_lo is None:
+        rank = _extract_rank(query)
+        if rank:
+            base_year = max(YIFENYIDANG.keys()) if YIFENYIDANG else 2025
+            if kelei:
+                score_lo = rank_to_score(rank, base_year, kelei)
+                if score_lo is not None:
+                    score_hi = score_lo
+                    user_rank = rank
+                    rank_via = base_year
+            else:
+                # 用户给了排名但没说物理/历史，尝试两者
+                score_phys = rank_to_score(rank, base_year, '物理')
+                score_hist = rank_to_score(rank, base_year, '历史')
+                if score_phys and score_hist:
+                    # 两者都可换算，默认物理（大多数用户是物理类），但标记需要确认
+                    kelei = '物理'
+                    score_lo, score_hi = score_phys, score_phys
+                    user_rank = rank
+                    rank_via = base_year
+                elif score_phys:
+                    kelei = '物理'
+                    score_lo, score_hi = score_phys, score_phys
+                    user_rank = rank
+                    rank_via = base_year
+                elif score_hist:
+                    kelei = '历史'
+                    score_lo, score_hi = score_hist, score_hist
+                    user_rank = rank
+                    rank_via = base_year
+                # 都无法换算则保持 None，走全量扫描
+    elif score_lo is not None and kelei and YIFENYIDANG:
+        # 用户给分数，顺带算一下位次供展示
+        base_year = max(YIFENYIDANG.keys())
+        user_rank = score_to_rank(score_lo, base_year, kelei)
 
     # ─── LRU 缓存命中直接返回 ───
     cached = _cache_get(query, score_lo, kelei)
@@ -636,6 +904,16 @@ def search_kb(query: str, top_n: int = 21):
 
     expanded = _expand_query(query)
 
+    # 双一流学科匹配：查找查询中的学科关键词 → 匹配有该学科的学校
+    if subject_mode:
+        q_words_set = set(expanded.replace(',', ' ').replace('，', ' ').split())
+        for w in q_words_set:
+            w = w.strip()
+            if len(w) >= 2:
+                schools = _get_subject_schools(w)
+                if schools:
+                    subject_schools |= set(schools)
+
     # 标签过滤
     tag_filter = None
     for tag in ['985', '211', '双一流']:
@@ -643,7 +921,16 @@ def search_kb(query: str, top_n: int = 21):
             tag_filter = tag
             break
 
-    SEARCH_MARGIN = 30
+    # 自适应分数窗口：高分区间每人只差1-2分，窗口收窄；低分区间分数稀疏，窗口放宽
+    if score_lo is not None:
+        if score_lo >= 600:
+            SEARCH_MARGIN = 15   # ±30总窗口
+        elif score_lo >= 450:
+            SEARCH_MARGIN = 20   # ±35总窗口
+        else:
+            SEARCH_MARGIN = 30   # ±45总窗口
+    else:
+        SEARCH_MARGIN = 30
     all_matches = []
 
     # ─── 使用倒排索引快速定位候选记录 ───
@@ -653,8 +940,11 @@ def search_kb(query: str, top_n: int = 21):
 
     if q_tokens:
         # 收集所有匹配的 (year, idx) 对
+        # 排除省份名：用户说"河北"是定位不是搜校名，不能用省份名过滤候选
         matched = set()
         for token in q_tokens:
+            if token in KNOWN_PROVINCES:
+                continue
             if token in _MAJOR_INDEX:
                 matched |= _MAJOR_INDEX[token]
             if token in _SCHOOL_INDEX:
@@ -718,8 +1008,10 @@ def search_kb(query: str, top_n: int = 21):
             # 使用预计算的 bi/trigram 加速评分
             pre_bg = _RECORD_BIGRAMS.get(year, {}).get(i)
             pre_tg = _RECORD_TRIGRAMS.get(year, {}).get(i)
-            sc = _score_item_v2(item, query, expanded, pre_bg, pre_tg)
-            if sc < MIN_RELEVANCE_THRESHOLD:
+            sc = _score_item_v2(item, query, expanded, pre_bg, pre_tg, score_lo, target_city, subject_schools)
+            # 有分数+科类时，分数区间已过滤，降低文本匹配阈值让分数接近度主导
+            eff_threshold = 0 if (score_lo is not None and kelei) else MIN_RELEVANCE_THRESHOLD
+            if sc < eff_threshold:
                 continue
 
             all_matches.append((sc, year, item))
@@ -810,6 +1102,12 @@ def search_kb(query: str, top_n: int = 21):
         'province_available': province_available,
         'kelei': kelei,
         'score': score_lo,
+        'user_rank': user_rank,
+        'rank_via': rank_via,
+        'city': target_city,
+        'admission_type': admission_type,
+        'subject_mode': subject_mode,
+        'subject_schools': list(subject_schools)[:20] if subject_schools else [],
     }
     # 存入 LRU 缓存
     _cache_set(query, score_lo, kelei, result, meta)
@@ -871,11 +1169,46 @@ def format_kb_results(results, query='', meta=None):
             parts.append(province_warning)
             parts.append('')
 
-    # 用户分数→位次上下文
-    user_ctx = user_score_context(query) if query else ''
-    if user_ctx:
-        parts.append(f'【用户位次参考】{user_ctx}')
+    # 城市偏好
+    if meta and meta.get('city'):
+        parts.append(f'🎯 用户想去【{meta["city"]}】上学，已优先展示{meta["city"]}的学校。搜索结果已按城市偏好加权。')
         parts.append('')
+
+    # 双一流学科搜索
+    if meta and meta.get('subject_mode') and meta.get('subject_schools'):
+        parts.append(f'📖 用户查询双一流学科相关。以下结果中标注了具有该学科双一流资质的学校。'
+                    f'匹配到的学校: {", ".join(meta["subject_schools"][:10])}')
+        parts.append('')
+
+    # 特殊招生类型
+    if meta and meta.get('admission_type'):
+        types = meta['admission_type']
+        parts.append(f'📋 用户提到【{", ".join(types)}】招生类型。注意：当前数据库为普通批次录取数据，'
+                    f'{", ".join(types)}的分数线通常与普通批次不同（一般更低），请在回答中提醒用户核查当年{types[0]}的专门分数线。')
+        parts.append('')
+
+    # 用户分数/位次上下文
+    if meta:
+        user_rank = meta.get('user_rank')
+        user_score = meta.get('score')
+        kelei = meta.get('kelei', '')
+        if user_rank and meta.get('rank_via'):
+            # 用户直接给了位次，展示反推的分数
+            parts.append(f'【用户位次参考】用户全省位次约{user_rank}名（{kelei}），'
+                        f'通过{meta["rank_via"]}年一分一段表反推 ≈ {user_score}分。'
+                        f'注意：2024=前年, 2025=去年, 2026=今年（当前高考季），用前年去年位次走势推断今年。')
+            parts.append('')
+        elif user_score and user_rank and YIFENYIDANG:
+            # 用户给了分数，展示对应位次
+            base_year = max(YIFENYIDANG.keys())
+            parts.append(f'【用户位次参考】用户分数{user_score}({kelei}) ≈ {base_year}年全省位次约{user_rank}名。'
+                        f'注意：2024=前年, 2025=去年, 2026=今年（当前高考季），用前年去年位次走势推断今年。')
+            parts.append('')
+        elif user_score:
+            # 有分数但无位次（一分一段表未加载或科类不明）
+            parts.append(f'【用户位次参考】用户提到{user_score}分（{kelei or "科类不明"}），'
+                        f'一分一段表未加载，无法换算位次。')
+            parts.append('')
 
     if score_items:
         parts.append('【河北省录取数据 前年(2024)→去年(2025)对比 · 推断今年(2026)趋势】')
@@ -935,6 +1268,14 @@ def format_kb_results(results, query='', meta=None):
             grade = _match_subject_grade(school, major)
             if grade:
                 line += f' [学科评估: {grade}]'
+            # 附双一流学科标注（当用户搜索双一流学科时）
+            if meta and meta.get('subject_mode') and meta.get('subject_schools'):
+                school_norm = _normalize_school_name(school)
+                if school_norm in meta['subject_schools']:
+                    tier_info = _get_tier_info(school)
+                    matched_subjects = [s for s in tier_info.get('subjects', [])]
+                    if matched_subjects:
+                        line += f' [双一流学科: {", ".join(matched_subjects[:3])}]'
             parts.append(line)
 
     if school_items:
@@ -965,5 +1306,24 @@ def format_kb_results(results, query='', meta=None):
             if top_subjects:
                 line += f'\n  顶尖学科: {", ".join(top_subjects)}'
             parts.append(line)
+
+    # ─── 专业介绍 ───
+    if query:
+        matched_majors = _match_majors(query)
+        if matched_majors:
+            parts.append('')
+            parts.append('【专业参考 — 基于专业数据库，用张雪峰第一人称解读】')
+            for mj in matched_majors:
+                parts.append(f'◆ {mj["name"]}（{mj.get("category", "")}）')
+                parts.append(f'  学什么：{mj.get("what", "")}')
+                parts.append(f'  干什么：{mj.get("jobs", "")}')
+                parts.append(f'  钱景：{mj.get("salary_range", "")}')
+                if mj.get('top_schools'):
+                    parts.append(f'  强校：{", ".join(mj["top_schools"][:5])}')
+                parts.append(f'  坑点：{mj.get("pitfalls", "")}')
+                parts.append(f'  适合：{mj.get("suitable", "")}')
+                parts.append(f'  趋势：{mj.get("trend", "")}')
+            parts.append('')
+            parts.append('【重要】上述专业介绍是为了帮你给用户做专业科普，不要照念，要融进你的话里。介绍完专业内容后必须回归KB录取数据，用具体学校和分数给用户建议。')
 
     return '\n'.join(parts)

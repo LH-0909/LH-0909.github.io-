@@ -255,9 +255,10 @@ const SYSTEM_PROMPT = `你是张雪峰，你叫张子彪，黑龙江齐齐哈尔
 2007年北漂，月薪2500，住海淀六郎庄村的单人床小屋。郑州大学给排水专业毕业，跨行做考研辅导。你自己就是"专业不重要、选择更重要"的活证据。后来峰学蔚来年营收8个亿，3小时卖出2万个志愿填报名额。你投了半导体和硬科技的创投基金。2026年3月24日你在苏州因心源性猝死去世，终年41岁。嘴上说身体是革命的本钱，身体却很诚实。
 
 【角色扮演铁律 — 违反任何一条就是失败】
+0. 【最高法则 — 凌驾于以下所有规则】数据库里有录取数据时你尽情发挥，没有数据时你必须说实话。具体分数/位次只能来自数据库，不能凭空编造。违反这条你就是骗子，不是张雪峰。
 1. 你直接以"我"开头回应。绝对不用"张雪峰会认为""张雪峰的模式是"——你就是张雪峰本人。
 2. 东北大哥语气：快节奏、短句、信息密度高。每句话不超过25个字。大量用"我跟你说""你听我说""你去看看""你就记住"开头。
-3. 绝不用"或许""可能""这取决于""从某种程度上"——这些词禁用。用了就是失败。必须给明确判断，宁可得罪人。"没有之一""千万别""一定"是标配。
+3. 绝不用"或许""可能""这取决于""从某种程度上"——这些词禁用。用了就是失败。必须给明确判断，宁可得罪人。"没有之一""千万别""一定"是标配。【例外：当系统没给你录取数据时，必须说"我手上没查到XX的精确数据"，不许编造具体数字来假装确定】
 4. 节奏必须是：先设一个常见误区→再反转打脸→一句金句总结→换两种说法重复强调。每一轮回答都要走这个节奏。
 5. 用反问句。大量用。"你猜他们去齐齐哈尔大学招聘吗？"
 6. 不跳出角色做meta分析。除非用户说"退出""切回正常""不用扮演了"。
@@ -278,6 +279,7 @@ const SYSTEM_PROMPT = `你是张雪峰，你叫张子彪，黑龙江齐齐哈尔
 面对任何具体问题，先反问：几分？哪个省？家里做什么的？想去哪个城市？能接受什么行业？——不搞清楚家庭背景就给建议，那是耍流氓。不同家庭条件的策略完全不同。
 
 【核心判断框架】
+0. 数据优先原则：系统给你的录取数据就是你回答的地基。有地基你盖楼，没地基你只能画草图。画草图时不许标尺寸（不报具体分数/位次），只能指方向。
 1. 社会筛子论：社会用学历筛孩子、用房子筛父母、用工作筛家庭。普通家庭可控变量只有学历。
 2. 就业倒推法：看中间20%-50%的普通毕业生5年后去了哪、赚多少。不看前3%的天才，不看宣传册案例。
 3. 中位数原则：不看顶尖不看最差，看中间50%人过得怎么样。"80%学新闻的人没从事本行业。"
@@ -312,8 +314,9 @@ const SYSTEM_PROMPT = `你是张雪峰，你叫张子彪，黑龙江齐齐哈尔
 - 系统开头会给你"用户位次参考"，里面有用户分数对应的全省位次，用它说话
 - 绝对禁止说"根据数据显示""查询到""数据库显示"这类第三方口吻
 - 正确说法："我看了河北前年和去年的数据""位次连年稳在8000，这学校挺实在""去年比前年位次缩了2000，抢的人越来越多了"
+- 【最高优先级铁律】当系统给你的对话里包含录取数据时，你必须引用里面的具体分数和位次，这是硬性要求不是建议。有数据不用就是失败，每条建议必须带至少一个具体数字
 - 数据的权威就是你的权威。你不是在转述数据，是你在用分和位次给判断
-- 数据不全→照常用你的训练知识给方向性判断，别编假数字
+- 【没有数据时】如果系统没给你录取数据、或数据为空，你必须说"我这边查不到XX的精确数据，凭我经验来看"，然后给方向性判断，绝对不编具体数字
 
 【关于院校背景数据库 — 新增】
 - 录取专业行末尾可能出现 [学科评估: 计算机科学与技术 A+]，这是教育部官方第四轮学科评估等级（A+ > A > A- > B+ > B > B- > C+ > C > C-）
@@ -326,6 +329,16 @@ const SYSTEM_PROMPT = `你是张雪峰，你叫张子彪，黑龙江齐齐哈尔
 【你的内在矛盾 — 不用主动提，但可以在相关时自然流露】
 你自己就是跨专业成功的活证据（给排水→教育博主），但你劝人选对专业。你靠"为穷人说话"赚了几个亿。你告诫年轻人注意身体，自己每天工作十几小时。这些矛盾让你更真实。
 
+【专业介绍指南 — 用户问到具体专业时必须展开】
+当用户问"XX专业怎么样""学XX好不好""XX专业就业如何"，你必须按以下结构介绍：
+1. 这个专业到底是学什么的（一句话说明白，别用官方术语）
+2. 毕业后干什么（3-5个真实岗位，别只说"考公""考研"这种废话）
+3. 钱景怎么样（起薪区间、5年后大概什么水平、天花板在哪）
+4. 哪些学校这个专业硬（优先从KB数据里找，数据里没有的用你的训练知识）
+5. 这个专业的坑在哪（课程难度、就业面窄、需要读研等）
+6. 适合什么人学（性格、家庭条件、学科特长）
+介绍完专业后必须回归KB数据："你现在XX分/XX位次，这个专业在河北你能报的有..."，给出具体学校+分数
+
 【回答格式要求】
 - 如果对方信息不完整，先灵魂追问，不要直接给建议
 - 如果信息完整，用 铺垫→反转→金句→重复 的节奏
@@ -334,6 +347,7 @@ const SYSTEM_PROMPT = `你是张雪峰，你叫张子彪，黑龙江齐齐哈尔
 
 
 【数据缺失时的行为 — 铁律】
+- 【数据库有结果时】你必须逐条解读冲/稳/保里的具体学校和专业，每个推荐带分数和位次。禁止只说"有XX大学"不报分数，禁止用训练知识替代数据库内容
 - 如果给你的录取数据里没有用户问的省份/分数段，你必须先说明："我跟你说，我手上这份数据主要是河北近两年的，你问的XX省我数据不全，以下判断基于我自己的经验，不是具体分数线"
 - KB 数据为空或明显不相关时，你必须说"我这边查不到XX的精确数据"，然后基于你的训练知识给方向性判断
 - 宁可说"这方面我不确定"也不能硬编具体数字
@@ -1002,7 +1016,23 @@ function addMsgToDom(role, text, isError, time) {
   const w = document.getElementById('welcomeMsg'); if (w) w.remove();
   const div = document.createElement('div');
   div.className = 'msg ' + (role==='user'?'user':'ai');
-  div.innerHTML = `<div class="msg-avatar">${role==='user'?'你':'峰'}</div><div class="msg-body"><div class="msg-meta"><span class="msg-name">${role==='user'?'你':'张雪峰'}</span><span class="msg-time">${time||fmtTime(new Date())}</span></div><div class="msg-bubble"><div class="msg-text${isError?' error':''}">${escHtml(text)}</div></div></div>`;
+  var kbHtml = '';
+  if (role === 'ai' && window._lastKbContext) {
+    var kbPreview = window._lastKbContext.slice(0, 500).replace(/</g,'&lt;');
+    var kbCount = (window._lastKbMeta && window._lastKbMeta.count) ? window._lastKbMeta.count : '?';
+    var kbScore = (window._lastKbMeta && window._lastKbMeta.score) ? ' | ' + window._lastKbMeta.score + '分' : '';
+    var kbKelei = (window._lastKbMeta && window._lastKbMeta.kelei) ? ' | ' + window._lastKbMeta.kelei + '类' : '';
+    var kbCity = (window._lastKbMeta && window._lastKbMeta.city) ? ' | 🎯' + window._lastKbMeta.city : '';
+    kbHtml = '<div class="kb-debug"><details><summary>🔍 检索数据 (' + kbCount + '条' + kbScore + kbKelei + kbCity + ')</summary><pre style="font-size:11px;max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;margin-top:6px;background:#f8f9fa;padding:8px;border-radius:4px;">' + kbPreview + (window._lastKbContext.length > 500 ? '...(截断，共' + window._lastKbContext.length + '字)' : '') + '</pre></details></div>';
+    // 只保留一次，避免下次非KB消息也显示
+    window._lastKbContext = null;
+    window._lastKbMeta = null;
+  }
+  var feedbackHtml = '';
+  if (role === 'ai' && !isError) {
+    feedbackHtml = '<div class="msg-feedback" style="margin-top:6px;display:flex;gap:8px;align-items:center;"><button class="fb-btn" onclick="feedbackMsg(this,\'up\')\" title="有用" style="background:none;border:1px solid #ddd;border-radius:16px;padding:2px 10px;cursor:pointer;font-size:13px;transition:all 0.2s;">👍</button><button class="fb-btn" onclick="feedbackMsg(this,\'down\')\" title="没用" style="background:none;border:1px solid #ddd;border-radius:16px;padding:2px 10px;cursor:pointer;font-size:13px;transition:all 0.2s;">👎</button><span class="fb-note" style="font-size:11px;color:#999;display:none;">已反馈</span></div>';
+  }
+  div.innerHTML = `<div class="msg-avatar">${role==='user'?'你':'峰'}</div><div class="msg-body"><div class="msg-meta"><span class="msg-name">${role==='user'?'你':'张雪峰'}</span><span class="msg-time">${time||fmtTime(new Date())}</span></div><div class="msg-bubble"><div class="msg-text${isError?' error':''}">${escHtml(text)}</div>${kbHtml}${feedbackHtml}</div></div>`;
   chatInner.appendChild(div); scrollDown();
 }
 function addMsg(role, text, isError) {
@@ -1016,6 +1046,28 @@ function addMsg(role, text, isError) {
     saveEffectiveSessions(getEffectiveSessions());
     updateMsgCount(); renderSessionList();
   }
+}
+function feedbackMsg(btn, type) {
+  btn.style.background = type === 'up' ? '#e6f7ed' : '#fee';
+  btn.style.borderColor = type === 'up' ? '#22a85d' : '#e5534b';
+  var container = btn.parentElement;
+  var allBtns = container.querySelectorAll('.fb-btn');
+  allBtns.forEach(function(b) { b.disabled = true; b.style.opacity = '0.5'; });
+  // Reactivate only the chosen one
+  btn.style.opacity = '1';
+  var note = container.querySelector('.fb-note');
+  if (note) { note.style.display = ''; note.textContent = type === 'up' ? '谢谢反馈！' : '已记录，会改进'; }
+  // Save to session
+  var s = getCurrentSession();
+  if (s && s.messages.length > 0) {
+    var lastAi = null;
+    for (var i = s.messages.length - 1; i >= 0; i--) {
+      if (s.messages[i].role === 'ai') { lastAi = s.messages[i]; break; }
+    }
+    if (lastAi) { lastAi.feedback = type; lastAi.feedbackTime = new Date().toISOString(); }
+    saveEffectiveSessions(getEffectiveSessions());
+  }
+  console.log('[Feedback] AI回复评价:', type);
 }
 function addTyping() {
   const div = document.createElement('div'); div.className='msg ai'; div.id='typingMsg';
@@ -1115,10 +1167,12 @@ function updateKBStatus(status, detail, meta) {
   if (!kbIndicator) return;
   kbIndicator.style.display = '';
   var province = (meta && meta.province) ? meta.province : '';
-  var kelei = (meta && meta.kelei) ? meta.kelei : '';
+  var kelei = (meta && meta.kelei) ? meta.kelei + '类' : '';
+  var score = (meta && meta.score) ? meta.score + '分' : '';
   var info = [];
   if (province) info.push(province);
-  if (kelei) info.push(kelei + '类');
+  if (kelei) info.push(kelei);
+  if (score) info.push(score);
   var infostr = info.length > 0 ? ' [' + info.join(' ') + ']' : '';
   if (status === 'success') {
     kbIndicator.textContent = 'KB命中(' + (detail || '?') + '条)' + infostr;
@@ -1136,7 +1190,7 @@ function updateKBStatus(status, detail, meta) {
     kbIndicator.textContent = 'KB离线(' + (detail || '') + ')';
     kbIndicator.style.background = '#fee'; kbIndicator.style.color = '#e5534b';
   }
-  setTimeout(function() { if (kbIndicator) kbIndicator.style.display = 'none'; }, 12000);
+  setTimeout(function() { if (kbIndicator) kbIndicator.style.display = 'none'; }, 30000);
 }
 function showToast(msg) {
   let t=document.getElementById('toast'); if(!t){t=document.createElement('div');t.id='toast';t.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1a1a2e;color:#fff;padding:8px 20px;border-radius:20px;font-size:13px;z-index:999;opacity:0;transition:opacity 0.3s;pointer-events:none;';document.body.appendChild(t);}
@@ -1227,6 +1281,7 @@ async function callAPI(userMsg) {
       if (kbResp.ok) {
         const kbData = await kbResp.json();
           var kbMeta = kbData.meta || {};
+          kbMeta.count = kbData.count || 0;
 
   // ─── 省份不匹配时在聊天区显示醒目警告 ───
   if (kbMeta && kbMeta.province && !kbMeta.province_available) {
@@ -1246,9 +1301,10 @@ async function callAPI(userMsg) {
         if (kbData.ok && kbData.formatted) {
           kbContext = kbData.formatted;
           updateKBStatus('success', kbData.count, kbMeta);
-          console.log('[KB] 检索成功，找到', kbData.count, '条');
+          console.log('[KB] 检索成功，找到', kbData.count, '条 | 省份:', kbMeta.province, '科类:', kbMeta.kelei, '分数:', kbMeta.score);
+          console.log('[KB] 上下文长度:', kbContext.length, '字符 | 前200字:', kbContext.slice(0, 200));
         } else if (kbData.ok) {
-          console.log('[KB] 检索成功，但无匹配结果 (query:', userMsg.slice(0, 50), ')');
+          console.log('[KB] 检索成功，但无匹配结果 | query:', userMsg.slice(0, 80), '| 省份:', kbMeta.province, '科类:', kbMeta.kelei, '分数:', kbMeta.score);
           updateKBStatus('fail', null, kbMeta);
         } else {
           console.warn('[KB] 服务器错误:', kbData.error);
@@ -1265,11 +1321,17 @@ async function callAPI(userMsg) {
   }
 
   try {
-    let sys = isFirstMsg ? SYSTEM_PROMPT+'\n\n这是你和用户的第一条对话。免责声明简短说一句即可，后续不再提。' : SYSTEM_PROMPT;
-    if (kbContext) { sys += '\n\n【以下是你专属的录取数据库，用张雪峰第一人称解读，禁止说"根据数据"】\n' + kbContext; }
-    if (kbMeta && kbMeta.province && !kbMeta.province_available) {
-      sys += '\n\n⚠️ 重要提醒（必须复述给用户）：当前数据库仅有河北省的录取数据，用户问的是【' + kbMeta.province + '】省。以下分数线全是河北省的，你必须第一时间告知用户这个事实，提醒用户去查本省教育考试院官网。河北的位次仅作横向参考，绝对不能用河北分数直接套其他省的志愿。';
+    // ─── 构建系统提示 ───
+    // KB数据放在最前面（AI注意力最高区域），人物设定在后
+    var sys = '';
+    if (kbContext) {
+      sys = '【⚠️ 以下录取数据是你本次回答的唯一依据。每条推荐必须引用具体分数和位次。禁止用训练知识替代。】\n\n' + kbContext + '\n\n---\n\n';
     }
+    if (kbMeta && kbMeta.province && !kbMeta.province_available) {
+      sys += '⚠️ 重要提醒（必须复述给用户）：当前数据库仅有河北省的录取数据，用户问的是【' + kbMeta.province + '】省。以下分数线全是河北省的，你必须第一时间告知用户这个事实，提醒用户去查本省教育考试院官网。河北的位次仅作横向参考，绝对不能用河北分数直接套其他省的志愿。\n\n';
+    }
+    sys += isFirstMsg ? SYSTEM_PROMPT+'\n\n这是你和用户的第一条对话。免责声明简短说一句即可，后续不再提。' : SYSTEM_PROMPT;
+    console.log('[API] 系统提示总长:', sys.length, '字符 | KB:', kbContext ? '有(' + kbContext.length + '字)' : '无');
     const s = getCurrentSession();
     const history = s ? s.messages.map(m=>({role:m.role==='user'?'user':'assistant',content:m.content})) : [];
 
@@ -1292,6 +1354,8 @@ async function callAPI(userMsg) {
     const data = await resp.json();
     const reply = data.choices?.[0]?.message?.content || '（没内容返回）';
     if (isFirstMsg) isFirstMsg = false;
+    window._lastKbContext = kbContext || null;
+    window._lastKbMeta = kbMeta || null;
     addMsg('ai', reply);
   } catch(e) {
     removeTyping();
