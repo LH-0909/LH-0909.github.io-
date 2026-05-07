@@ -338,6 +338,24 @@ def _get_score_range_for_year(user_score, user_kelei, target_year):
         return user_score - 25, user_score + 25
     return target_score - 15, target_score + 15  # ±15分用于过滤
 
+# ─── 省份列表（用于检测用户查询中的省份） ───
+# 当前知识库仅有河北省录取数据，检测到其他省份需要明确提示
+KNOWN_PROVINCES = {
+    '河北', '河南', '山东', '山西', '陕西', '江苏', '浙江', '广东', '湖北', '湖南',
+    '四川', '安徽', '福建', '江西', '辽宁', '吉林', '黑龙江', '云南', '贵州',
+    '甘肃', '青海', '海南', '内蒙古', '西藏', '宁夏', '新疆', '广西',
+    '北京', '上海', '天津', '重庆',
+}
+# 当前已有录取数据的省份（后续扩展只需加到这里）
+AVAILABLE_PROVINCES = {'河北'}
+
+def _extract_province(query: str):
+    """从查询中提取用户提到的省份，返回 (省份名称, 是否有数据) 或 (None, True)"""
+    for p in KNOWN_PROVINCES:
+        if p in query:
+            return p, p in AVAILABLE_PROVINCES
+    return None, True  # 未提省份，不触发警告
+
 def _extract_score(query: str):
     """从查询中提取分数数字，返回 (分数, None) 或 (None, None)"""
     import re
@@ -350,9 +368,9 @@ def _extract_score(query: str):
 
 def _detect_kelei(query: str):
     """检测查询中的科类倾向"""
-    if any(w in query for w in ['物理', '理科', '物理组', '物化生', '物化地', '物生地']):
+    if any(w in query for w in ['物理', '理科', '理科生', '物理组', '物化生', '物化地', '物生地', '物化', '选物理']):
         return '物理'
-    if any(w in query for w in ['历史', '文科', '历史组', '史地政', '史政生']):
+    if any(w in query for w in ['历史', '文科', '文科生', '历史组', '史地政', '史政生', '选历史']):
         return '历史'
     return None
 
@@ -409,11 +427,94 @@ def _get_tier_info(school_name):
     _TIER_CACHE[cache_key] = default
     return default
 
+# ═══════════════════════════════════════════════════════════════
+# 高性能检索加速：倒排索引 + LRU缓存 + 预计算
+# ═══════════════════════════════════════════════════════════════
+
+# ─── bi/trigram 函数（必须提前定义，索引构建依赖它们）───
 def _bigrams(text: str):
     return {text[i:i+2] for i in range(len(text) - 1)}
 
 def _trigrams(text: str):
     return {text[i:i+3] for i in range(len(text) - 2)}
+
+# ─── 预分区（物理/历史分开，避免每次查询都过滤科类）───
+_SCORES_BY_KELEI = {'物理': {y: [] for y in SCORE_YEARS_ASC}, '历史': {y: [] for y in SCORE_YEARS_ASC}}
+_SCORES_INDEX = {y: {} for y in SCORE_YEARS_ASC}  # year -> {global_idx: item}
+
+for year in SCORE_YEARS_ASC:
+    for i, item in enumerate(KB_SCORES.get(year, [])):
+        _SCORES_INDEX[year][i] = item
+        kelei = item.get('科类', '')
+        if kelei in _SCORES_BY_KELEI:
+            _SCORES_BY_KELEI[kelei][year].append(i)
+        else:
+            _SCORES_BY_KELEI['物理'][year].append(i)
+
+# ─── 倒排索引：关键词 → 记录ID集合 ───
+def _tokenize(text: str):
+    """将文本拆分为有意义的索引词（≥2字）"""
+    import re
+    tokens = set()
+    parts = re.split(r'[，,、\s\-/（）()（]+', text)
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if len(part) >= 2:
+            for i in range(len(part) - 1):
+                tokens.add(part[i:i+2])
+            tokens.add(part)
+    return tokens
+
+_MAJOR_INDEX = {}   # token -> set of (year, global_idx)
+_SCHOOL_INDEX = {}  # token -> set of (year, global_idx)
+_RECORD_BIGRAMS = {y: {} for y in SCORE_YEARS_ASC}
+_RECORD_TRIGRAMS = {y: {} for y in SCORE_YEARS_ASC}
+
+print("🔧 正在构建检索索引...")
+_indexed = 0
+for year in SCORE_YEARS_ASC:
+    for i, item in enumerate(KB_SCORES.get(year, [])):
+        school = item.get('院校名称', '')
+        major = item.get('专业名称', '')
+        # 预计算 bi/trigram
+        _RECORD_BIGRAMS[year][i] = _bigrams(school) | _bigrams(major)
+        _RECORD_TRIGRAMS[year][i] = _trigrams(school) | _trigrams(major)
+        # 建立倒排索引
+        for token in _tokenize(school):
+            _SCHOOL_INDEX.setdefault(token, set()).add((year, i))
+        for token in _tokenize(major):
+            _MAJOR_INDEX.setdefault(token, set()).add((year, i))
+        _indexed += 1
+        if _indexed % 10000 == 0:
+            print(f"  ... 已索引 {_indexed} 条")
+_str = '  '.join(f'{y}:物{len(_SCORES_BY_KELEI["物理"][y])}/历{len(_SCORES_BY_KELEI["历史"][y])}' for y in SCORE_YEARS_ASC)
+print(f"✅ 倒排索引完成: 专业词{len(_MAJOR_INDEX)}个, 学校词{len(_SCHOOL_INDEX)}个, 分区 {_str}")
+
+# ─── LRU 查询缓存 ───
+from collections import OrderedDict
+_QUERY_CACHE = OrderedDict()
+_QUERY_CACHE_MAX = 256
+
+def _cache_key(query: str, score_lo, kelei):
+    return (query.strip(), score_lo, kelei or '')
+
+def _cache_get(query: str, score_lo, kelei):
+    key = _cache_key(query, score_lo, kelei)
+    if key in _QUERY_CACHE:
+        _QUERY_CACHE.move_to_end(key)
+        return _QUERY_CACHE[key]
+    return None
+
+def _cache_set(query: str, score_lo, kelei, result, meta):
+    key = _cache_key(query, score_lo, kelei)
+    if key in _QUERY_CACHE:
+        _QUERY_CACHE.move_to_end(key)
+    else:
+        _QUERY_CACHE[key] = (result, meta)
+        while len(_QUERY_CACHE) > _QUERY_CACHE_MAX:
+            _QUERY_CACHE.popitem(last=False)
 
 # ─── 专业别名映射 ───
 SYNONYM_MAP = {
@@ -445,39 +546,64 @@ def _expand_query(query: str):
             parts.append(aliases)
     return ' '.join(parts)
 
-def _score_item_v2(item, query, expanded_query):
-    """多因子综合评分：子串命中(0-20) + 字符重叠(0-10) + bigram(0-5) + 学校档次(0-15) + 学科评估(0-5)"""
+def _score_item_v2(item, query, expanded_query, pre_bigrams=None, pre_trigrams=None):
+    """多因子综合评分：子串命中(0-30) + 字符重叠(0-5) + bigram(0-5) + trigram(0-8) + 学校档次(0-6) + 学科评估(0-5)
+    最低阈值 = 5，低于此分直接丢弃。
+    支持预计算的 bi/trigram 集合加速（避免每次查询重复计算）。"""
     school = item.get('院校名称', '')
     major = item.get('专业名称', '')
     q_chars = set(query)
 
-    # 1. 子串命中 — 最关键维度（0-20）
+    # 1. 子串命中 — 最关键维度（0-30），大幅提权
     sub_score = 0
-    for word in expanded_query.replace(',', ' ').replace('，', ' ').split():
+    q_words = expanded_query.replace(',', ' ').replace('，', ' ').split()
+    for word in q_words:
         w = word.strip()
         if len(w) < 2:
             continue
         if w in school:
             sub_score += 3
         if w in major:
-            sub_score += 4
-    sub_score = min(sub_score, 20)
+            sub_score += 5  # 专业名命中权重更高
+    sub_score = min(sub_score, 30)
 
-    # 2. 字符集重叠（0-10）
+    # 1.5 精确专业名匹配加权 — 查询关键词完整命中专业名 +5
+    exact_bonus = 0
+    for word in q_words:
+        w = word.strip()
+        if len(w) >= 2 and w in major:
+            exact_bonus = 5
+            break
+
+    # 2. 字符集重叠（0-5），降低以抑制噪音
     char_score = 0
     if q_chars:
-        char_score = (len(q_chars & set(school)) / len(q_chars)) * 6 + (len(q_chars & set(major)) / len(q_chars)) * 4
-    char_score = min(char_score, 10)
+        char_score = (len(q_chars & set(school)) / len(q_chars)) * 3 + (len(q_chars & set(major)) / len(q_chars)) * 2
+    char_score = min(char_score, 5)
 
-    # 3. Bigram 模糊匹配（0-5）
+    # 3. Bigram 模糊匹配（0-5），优先使用预计算
     q_bigrams = _bigrams(expanded_query)
-    bg_score = len(q_bigrams & _bigrams(school)) * 0.2 + len(q_bigrams & _bigrams(major)) * 0.4
+    if pre_bigrams is not None:
+        bg_score = len(q_bigrams & pre_bigrams) * 0.3
+    else:
+        bg_score = len(q_bigrams & _bigrams(school)) * 0.2 + len(q_bigrams & _bigrams(major)) * 0.4
     bg_score = min(bg_score, 5)
 
-    # 4. 学校档次（0-15）
-    tier = _get_tier_score(school)
+    # 3.5 Trigram 模糊匹配（0-8），优先使用预计算
+    q_trigrams = _trigrams(expanded_query)
+    if pre_trigrams is not None:
+        tg_score = len(q_trigrams & pre_trigrams) * 0.4
+    else:
+        tg_score = len(q_trigrams & _trigrams(school)) * 0.3 + len(q_trigrams & _trigrams(major)) * 0.5
+    tg_score = min(tg_score, 8)
 
-    total = sub_score + char_score + bg_score + tier
+    # 4. 学校档次（0-6），大幅降低以避免档次淹没相关性
+    tier = _get_tier_score(school)
+    # 原始 tier_score: 985=15, 211=8, 双一流=5, 其他=0
+    # 映射到 0-6 区间: 985→6, 211→3, 双一流→2, 其他→0
+    tier = 6 if tier >= 15 else (3 if tier >= 8 else (2 if tier >= 5 else 0))
+
+    total = sub_score + exact_bonus + char_score + bg_score + tg_score + tier
     if total == 0:
         return 0
 
@@ -496,9 +622,18 @@ def _score_item_v2(item, query, expanded_query):
 
     return total + eval_bonus
 
+MIN_RELEVANCE_THRESHOLD = 5  # 最低相关性阈值，低于此分丢弃
+
 def search_kb(query: str, top_n: int = 21):
     score_lo, score_hi = _extract_score(query)
     kelei = _detect_kelei(query)
+    province, province_available = _extract_province(query)
+
+    # ─── LRU 缓存命中直接返回 ───
+    cached = _cache_get(query, score_lo, kelei)
+    if cached is not None:
+        return cached
+
     expanded = _expand_query(query)
 
     # 标签过滤
@@ -508,11 +643,31 @@ def search_kb(query: str, top_n: int = 21):
             tag_filter = tag
             break
 
-    SEARCH_MARGIN = 30  # 分数搜索窗口，覆盖冲稳保
-
+    SEARCH_MARGIN = 30
     all_matches = []
 
+    # ─── 使用倒排索引快速定位候选记录 ───
+    # 从查询中提取索引词，查找倒排索引获取候选记录 ID 集合
+    q_tokens = _tokenize(expanded)
+    candidate_ids = None  # None = 全量扫描（fallback）
+
+    if q_tokens:
+        # 收集所有匹配的 (year, idx) 对
+        matched = set()
+        for token in q_tokens:
+            if token in _MAJOR_INDEX:
+                matched |= _MAJOR_INDEX[token]
+            if token in _SCHOOL_INDEX:
+                matched |= _SCHOOL_INDEX[token]
+        if matched:
+            candidate_ids = matched
+
+    # 预计算查询 bi/trigram（所有候选记录共用）
+    q_bigrams = _bigrams(expanded)
+    q_trigrams = _trigrams(expanded)
+
     for year in SCORE_YEARS_DESC:
+        # 分数范围换算
         if score_lo is not None and kelei:
             yr_lo, yr_hi = _get_score_range_for_year(score_lo, kelei, year)
             yr_lo = (yr_lo or score_lo) - SEARCH_MARGIN
@@ -522,7 +677,24 @@ def search_kb(query: str, top_n: int = 21):
         else:
             yr_lo, yr_hi = None, None
 
-        for item in KB_SCORES.get(year, []):
+        # ─── 优先使用预分区 + 倒排索引候选 ───
+        if kelei and kelei in _SCORES_BY_KELEI:
+            year_indices = _SCORES_BY_KELEI[kelei][year]
+        elif kelei:
+            year_indices = range(len(KB_SCORES.get(year, [])))
+        else:
+            year_indices = range(len(KB_SCORES.get(year, [])))
+
+        for i in year_indices:
+            # 倒排索引过滤：如果 candidate_ids 非空且当前记录不在其中，跳过
+            if candidate_ids is not None and (year, i) not in candidate_ids:
+                continue
+
+            # 统一从预建索引取记录
+            item = _SCORES_INDEX[year].get(i)
+            if item is None:
+                continue
+
             if kelei and item.get('科类', '') != kelei:
                 continue
 
@@ -543,8 +715,11 @@ def search_kb(query: str, top_n: int = 21):
                 if tag_filter == '双一流' and not tier_info['is_df']:
                     continue
 
-            sc = _score_item_v2(item, query, expanded)
-            if sc == 0:
+            # 使用预计算的 bi/trigram 加速评分
+            pre_bg = _RECORD_BIGRAMS.get(year, {}).get(i)
+            pre_tg = _RECORD_TRIGRAMS.get(year, {}).get(i)
+            sc = _score_item_v2(item, query, expanded, pre_bg, pre_tg)
+            if sc < MIN_RELEVANCE_THRESHOLD:
                 continue
 
             all_matches.append((sc, year, item))
@@ -629,7 +804,16 @@ def search_kb(query: str, top_n: int = 21):
     for _, item in school_results[:5]:
         output.append({'类型': '学校信息', **item})
 
-    return output
+    result = output
+    meta = {
+        'province': province,
+        'province_available': province_available,
+        'kelei': kelei,
+        'score': score_lo,
+    }
+    # 存入 LRU 缓存
+    _cache_set(query, score_lo, kelei, result, meta)
+    return result, meta
 
 def _rank_trend_desc(rk24, rk25):
     """描述位次变化趋势，返回说明文字"""
@@ -664,7 +848,7 @@ def user_score_context(query: str):
             return f'用户分数{score_lo}({k}) ≈ {base_year}年全省位次约{rank}名。注意：2024=前年, 2025=去年, 2026=今年（当前高考季），用前年去年位次走势推断今年。'
     return f'用户提到{score_lo}分（科类不明，无法精确换算位次）。'
 
-def format_kb_results(results, query=''):
+def format_kb_results(results, query='', meta=None):
     if not results:
         return ''
 
@@ -672,6 +856,20 @@ def format_kb_results(results, query=''):
     school_items = [r for r in results if r.get('类型') == '学校信息']
 
     parts = []
+
+    # ─── 省份不匹配警告 ───
+    province_warning = ''
+    if meta:
+        province = meta.get('province')
+        province_available = meta.get('province_available', True)
+        if province and not province_available:
+            province_warning = (
+                f'⚠️ 用户问的是【{province}】省的数据，但当前数据库仅有【河北】省的录取数据。'
+                f'以下所有分数线都是河北省的，对{province}考生仅供参考位次趋势，绝对不能用河北分数直接套{province}志愿！'
+                f'你必须明确告诉用户：这是河北数据，{province}的分数线请自行查阅本省教育考试院。'
+            )
+            parts.append(province_warning)
+            parts.append('')
 
     # 用户分数→位次上下文
     user_ctx = user_score_context(query) if query else ''

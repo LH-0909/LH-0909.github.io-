@@ -209,13 +209,17 @@ def kb_search():
     query = body.get('query', '')
     if not query:
         return jsonify({'ok': False, 'error': 'query 不能为空'}), 400
-    results = search_kb(query)
-    formatted = format_kb_results(results)
+    results, meta = search_kb(query)
+    formatted = format_kb_results(results, query, meta)
+    logging.info(f'[KB] query="{query[:80]}" province={meta.get("province")} '
+                 f'kelei={meta.get("kelei")} score={meta.get("score")} '
+                 f'results={len(results)} available={meta.get("province_available")}')
     return jsonify({
         'ok': True,
         'results': results,
         'formatted': formatted,
-        'count': len(results)
+        'count': len(results),
+        'meta': meta,
     })
 # ─── Auto-sync ngrok URL on startup ───
 def sync_ngrok_url():

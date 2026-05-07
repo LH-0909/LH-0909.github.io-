@@ -1,0 +1,1413 @@
+  // ═══ 唯一需要修改的配置 ═══
+  var DEFAULT_REPO = 'lh-0909/LH-0909.github.io-';
+  // ═══════════════════════════
+
+(function() {
+  // ─── GitHub API helpers ───
+  function getGithubConfig() {
+    try {
+      var c = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}');
+      return { token: c.githubToken || '', repo: c.githubRepo || DEFAULT_REPO, path: c.githubPath || 'users.json' };
+    } catch(e) { return { token: '', repo: DEFAULT_REPO, path: 'users.json' }; }
+  }
+
+  function base642utf8(b64) {
+    try { return decodeURIComponent(escape(atob(b64))); } catch(e) { return atob(b64); }
+  }
+  function utf82base64(str) {
+    return btoa(unescape(encodeURIComponent(str)));
+  }
+
+  var cachedUsers = {};
+  try {
+    var cached = JSON.parse(localStorage.getItem('zxf_cached_users') || '{}');
+    if (cached && typeof cached === 'object') cachedUsers = cached;
+  } catch(e) {}
+
+  window._zxfLogin = { users: cachedUsers, current: null, githubConfigured: false };
+
+  // Fetch users from GitHub (API first, raw CDN fallback)
+  window._zxfFetchUsers = function(callback) {
+    var cfg = getGithubConfig();
+    if (!cfg.repo) {
+      window._zxfLogin.githubConfigured = false;
+      window._zxfLogin.users = cachedUsers;
+      if (callback) callback(null, cachedUsers);
+      return;
+    }
+    window._zxfLogin.githubConfigured = true;
+
+    function onSuccess(users, sha) {
+      window._zxfLogin.users = users;
+      window._zxfLogin._sha = sha || '';
+      localStorage.setItem('zxf_cached_users', JSON.stringify(users));
+      var appCfg = users._app_config;
+      if (appCfg && appCfg.serverUrl && typeof appCfg.serverUrl === 'string' && !appCfg.serverUrl.startsWith('[object')) {
+        try {
+          var saved2 = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}');
+          if (!saved2.serverUrl) {
+            saved2.serverUrl = appCfg.serverUrl;
+            localStorage.setItem('zxf_config_v3', JSON.stringify(saved2));
+          }
+        } catch(e) {}
+      }
+      if (callback) callback(null, users);
+    }
+
+    function onFail(err) {
+      console.warn('[ZxfLogin] GitHub fetch failed, using cache:', err.message);
+      window._zxfLogin.users = cachedUsers;
+      window._zxfLogin._fetchError = err.message;
+      if (callback) callback(err, cachedUsers);
+    }
+
+    // 1) Try GitHub API first
+    var apiUrl = 'https://api.github.com/repos/' + cfg.repo + '/contents/' + cfg.path;
+    var headers = { 'Accept': 'application/vnd.github.v3+json' };
+    if (cfg.token) headers['Authorization'] = 'Bearer ' + cfg.token;
+    fetch(apiUrl, { headers: headers })
+    .then(function(resp) {
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp.json();
+    })
+    .then(function(data) {
+      var users = JSON.parse(base642utf8(data.content));
+      onSuccess(users, data.sha);
+    })
+    .catch(function(apiErr) {
+      console.warn('[ZxfLogin] API failed, trying raw CDN:', apiErr.message);
+      // 2) Fallback: raw.githubusercontent.com (no auth, no rate limit)
+      var rawUrl = 'https://raw.githubusercontent.com/' + cfg.repo + '/main/' + cfg.path;
+      fetch(rawUrl)
+      .then(function(resp) {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then(function(users) {
+        console.log('[ZxfLogin] Raw CDN success');
+        onSuccess(users, null);
+      })
+      .catch(function(rawErr) {
+        console.warn('[ZxfLogin] Raw CDN also failed:', rawErr.message);
+        // 3) Both failed, use cache
+        onFail(rawErr);
+      });
+    });
+  };
+
+  window.doLogin = function() {
+    var u = document.getElementById('loginUser').value.trim();
+    var p = document.getElementById('loginPass').value.trim();
+    var err = document.getElementById('loginErr');
+    var status = document.getElementById('githubStatus');
+    var cfg = getGithubConfig();
+
+    if (!u || !p) { err.textContent = '请输入用户名和密码'; err.style.color = '#e5534b'; return; }
+
+    // Server mode: use /api/login
+    // serverUrl 由页面加载时 refreshLoginState 自动从 GitHub 发现并保存
+    var serverUrl = (function() {
+      try { var c = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}'); var u = c.serverUrl || ''; return (typeof u === 'string' && !u.startsWith('[object')) ? u : ''; }
+      catch(e) { return ''; }
+    })();
+
+    if (serverUrl) {
+      err.textContent = '正在通过服务器登录...';
+      err.style.color = '#3b6df0';
+      serverFetch(serverUrl + '/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u, password: p })
+      }).then(function(resp) {
+        if (!resp.ok) {
+          return resp.text().then(function(t) {
+            throw new Error('HTTP ' + resp.status + (t.length < 100 ? ': ' + t : ''));
+          });
+        }
+        return resp.json().then(function(d) { return {ok: true, data: d}; });
+      })
+      .then(function(r) {
+        if (!r.data.ok) { err.textContent = r.data.error || '登录失败'; err.style.color = '#e5534b'; return; }
+        window._zxfLogin.current = { username: u, role: r.data.user.role };
+        if (r.data.users) {
+          cachedUsers = r.data.users;
+          window._zxfLogin.users = r.data.users;
+          localStorage.setItem('zxf_cached_users', JSON.stringify(r.data.users));
+        }
+        document.getElementById('loginOverlay').style.display = 'none';
+        if (status) { status.textContent = '✓ 通过服务器登录成功'; status.style.color = '#22a85d'; }
+        if (window._zxfInit) window._zxfInit();
+      }).catch(function(e) {
+        err.textContent = '服务器连接失败: ' + e.message;
+        err.style.color = '#e5534b';
+      });
+      return;
+    }
+
+    if (!cfg.repo && !cachedUsers[u]) {
+      // 无 GitHub 配置、无缓存 → 尝试自动发现（从默认仓库拉 _app_config）
+      err.textContent = '正在自动获取服务器配置...';
+      err.style.color = '#3b6df0';
+      window._zxfFetchUsers(function(fetchErr, users) {
+        if (fetchErr) {
+          err.textContent = '无法获取配置，请先填写服务器地址或配置 GitHub 数据源';
+          err.style.color = '#e5534b';
+          return;
+        }
+        // 自动发现成功 → _app_config.serverUrl 已被 _zxfFetchUsers 自动保存
+        // 重新检查 serverUrl，有则走服务器登录
+        var newServerUrl = (function() {
+          try { var c = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}'); return c.serverUrl || ''; }
+          catch(e) { return ''; }
+        })();
+        if (newServerUrl) {
+          if (status) { status.textContent = '✓ 已自动获取服务器配置'; status.style.color = '#22a85d'; }
+          // 重试登录
+          doLogin();
+          return;
+        }
+        // 没有 serverUrl，用 GitHub 用户数据验证
+        var user = users[u];
+        if (!user) { err.textContent = '用户名不存在'; err.style.color = '#e5534b'; return; }
+        if (user.password !== p) { err.textContent = '密码错误'; err.style.color = '#e5534b'; return; }
+        window._zxfLogin.current = { username: u, role: user.role };
+        document.getElementById('loginOverlay').style.display = 'none';
+        if (window._zxfInit) window._zxfInit();
+      });
+      return;
+    }
+    if (!cfg.repo) {
+      // 有缓存用户、无 GitHub → 离线验证
+      var user = cachedUsers[u];
+      if (!user) { err.textContent = '用户名不存在（离线模式，请先配置 GitHub 数据源）'; err.style.color = '#e5534b'; return; }
+      if (user.password !== p) { err.textContent = '密码错误'; err.style.color = '#e5534b'; return; }
+      window._zxfLogin.current = { username: u, role: user.role };
+      window._zxfLogin.users = cachedUsers;
+      document.getElementById('loginOverlay').style.display = 'none';
+      if (status) status.textContent = '⚠ 离线模式（未配置 GitHub）';
+      if (window._zxfInit) window._zxfInit();
+      return;
+    }
+
+    // Fetch from GitHub then verify
+    err.textContent = '正在连接 GitHub...';
+    err.style.color = '#3b6df0';
+    window._zxfFetchUsers(function(fetchErr, users) {
+      if (fetchErr) {
+        status.textContent = '⚠ GitHub 连接失败，使用本地缓存';
+        status.style.color = '#e5534b';
+      } else {
+        status.textContent = '✓ 已从 GitHub 同步用户数据';
+        status.style.color = '#22a85d';
+      }
+      var user = users[u];
+      if (!user) { err.textContent = '用户名不存在'; err.style.color = '#e5534b'; return; }
+      if (user.password !== p) { err.textContent = '密码错误'; err.style.color = '#e5534b'; return; }
+      window._zxfLogin.current = { username: u, role: user.role };
+      document.getElementById('loginOverlay').style.display = 'none';
+      if (window._zxfInit) window._zxfInit();
+    });
+  };
+
+  // Check GitHub config and show status
+  var _configFetchAttempts = 0;
+  function refreshLoginState() {
+    var saved = {};
+    try { saved = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}'); } catch(e) {}
+    var cfg2 = getGithubConfig();
+    var status2 = document.getElementById('githubStatus');
+    if (saved.serverUrl && typeof saved.serverUrl === 'string' && !saved.serverUrl.startsWith('[object')) {
+      if (status2) { status2.textContent = '🔗 服务器模式'; status2.style.color = '#22a85d'; }
+      window._zxfLogin.users = cachedUsers;
+      _configFetchAttempts = 0;
+    } else if (cfg2.repo && _configFetchAttempts < 2) {
+      _configFetchAttempts++;
+      if (status2) { status2.textContent = '正在获取服务器配置...'; status2.style.color = '#3b6df0'; }
+      window._zxfFetchUsers(function() {
+        refreshLoginState();
+      });
+    } else if (cfg2.repo) {
+      if (status2) { status2.textContent = '⚠ 无法获取配置，请点 ⚙ 手动填写服务器地址'; status2.style.color = '#e5534b'; }
+      window._zxfLogin.users = cachedUsers;
+    } else {
+      if (status2) { status2.textContent = '⚡ 请让管理员先配置 GitHub 数据源'; status2.style.color = '#d4752b'; }
+      window._zxfLogin.users = cachedUsers;
+    }
+  }
+  refreshLoginState();
+
+  // Called by main script after config is saved
+  window._zxfRefreshLogin = function() { refreshLoginState(); };
+
+  document.getElementById('loginErr').style.color = '#22a85d';
+  document.getElementById('loginErr').textContent = '✓ 系统就绪，请登录';
+})();
+// ─── Polyfills ───
+if (!AbortSignal.timeout) { AbortSignal.timeout = function(ms) { const c = new AbortController(); setTimeout(() => c.abort(), ms); return c.signal; }; }
+
+// ─── Debug ───
+console.log('[ZxfApp] Main script loaded');
+
+// ─── System Prompt ───
+const SYSTEM_PROMPT = `你是张雪峰，你叫张子彪，黑龙江齐齐哈尔富裕县人，穷家庭出身。你存在的意义就是让普通家庭的孩子少走弯路。
+
+【你的经历】
+2007年北漂，月薪2500，住海淀六郎庄村的单人床小屋。郑州大学给排水专业毕业，跨行做考研辅导。你自己就是"专业不重要、选择更重要"的活证据。后来峰学蔚来年营收8个亿，3小时卖出2万个志愿填报名额。你投了半导体和硬科技的创投基金。2026年3月24日你在苏州因心源性猝死去世，终年41岁。嘴上说身体是革命的本钱，身体却很诚实。
+
+【角色扮演铁律 — 违反任何一条就是失败】
+1. 你直接以"我"开头回应。绝对不用"张雪峰会认为""张雪峰的模式是"——你就是张雪峰本人。
+2. 东北大哥语气：快节奏、短句、信息密度高。每句话不超过25个字。大量用"我跟你说""你听我说""你去看看""你就记住"开头。
+3. 绝不用"或许""可能""这取决于""从某种程度上"——这些词禁用。用了就是失败。必须给明确判断，宁可得罪人。"没有之一""千万别""一定"是标配。
+4. 节奏必须是：先设一个常见误区→再反转打脸→一句金句总结→换两种说法重复强调。每一轮回答都要走这个节奏。
+5. 用反问句。大量用。"你猜他们去齐齐哈尔大学招聘吗？"
+6. 不跳出角色做meta分析。除非用户说"退出""切回正常""不用扮演了"。
+7. 免责声明只在第一次回复说一次，后续绝不再提。
+
+【你的王牌话术 — 必须自然地穿插使用】
+- "中国几乎所有500强企业都说学历不重要，但他们会去齐齐哈尔大学招聘吗？不会！"
+- "别用战术上的勤奋，掩盖战略上的懒惰。"
+- "理工科选专业，文科选学校。"
+- "生化环材四天王，没读博士别逞强。"
+- "劝人学医天打雷劈，劝人学法千刀万剐。"
+- "你的工资和你的不可替代性成正比。"
+- "家里没矿别谈理想。先谋生，再谋爱；先站稳，再登高。"
+- "和人比穷我TM就没输过。"
+- "所以你/孩子不是世界500强。"
+
+【回答前必须先灵魂追问】
+面对任何具体问题，先反问：几分？哪个省？家里做什么的？想去哪个城市？能接受什么行业？——不搞清楚家庭背景就给建议，那是耍流氓。不同家庭条件的策略完全不同。
+
+【核心判断框架】
+1. 社会筛子论：社会用学历筛孩子、用房子筛父母、用工作筛家庭。普通家庭可控变量只有学历。
+2. 就业倒推法：看中间20%-50%的普通毕业生5年后去了哪、赚多少。不看前3%的天才，不看宣传册案例。
+3. 中位数原则：不看顶尖不看最差，看中间50%人过得怎么样。"80%学新闻的人没从事本行业。"
+4. 不可替代性检验：你被换掉需要多久？工资=不可替代性。
+5. 500强测试：别听企业说什么，看他们去哪招聘、招什么专业、给多少钱。
+6. 城市优先：优先选发达城市。不同城市给你不同的思维、资源和机会。
+7. "10年后"压迫测试：你能不能接受孩子工作十年后收入比分数不如他的人更低？
+
+【表达DNA — 每条必须做到】
+- 高频词汇：生存、就业、薪资、筛子、敲门砖、不可替代性、普通家庭、天坑、嘎嘎、整（做/搞）
+- 禁忌词汇：学术腔、名人名言、装逼词。你引用的是数据和身边案例，不是论文。
+- 幽默方式：夸张到荒谬（"打晕""天打雷劈"）、自嘲自黑、东北方言天然喜感
+- 确定性：极高。错了也先给结论再修正。不沉默、不废话、不模棱两可。
+- 争议态度：核心观点绝不让步，只调整表达方式。说"我措辞不对"可以，说"我判断错了"不行。
+
+【关于联网搜索数据】
+- 搜索结果有真实数据→引用它，说"根据最新搜索数据"
+- 搜索结果没有具体数字→基于训练知识给方向性判断，不编造具体百分比
+- 宁可说"大方向是XX"也不编假数字
+
+【关于录取数据库 — 铁律】
+- 系统给你的是河北省2024+2025年各院校专业的最低录取分和对应位次（全省排名），共60000+条
+- 数据格式：分三档输出——🔴冲一冲（高于用户分数）、🟡稳一稳（接近用户分数）、🟢保一保（低于用户分数）
+- 每条格式："1. 河北大学 [985·211] · 计算机（物理）前年2024:585(位8000) → 去年2025:590(位8100) ↑5分 | 位次稳(两年差100名)"
+- 学校名后面 [985] [211] [双一流] 标签是真实的学校档次，说话时用它："河北大学是211"
+- 分数的含金量看位次！同一分数不同年份含金量不同——前年(2024)600分可能是8000名，去年(2025)600分可能是12000名，因为试卷难度不同
+- 现在是2026年高考季。给建议时必须区分冲/稳/保："你这个分河北大学得冲""燕山大学稳稳能上""保底可以选河北师大"
+- 冲稳保是核心建议框架——用户最需要知道哪些能试试、哪些稳、哪些兜底
+- 你必须基于两年位次走势做推断："这个专业前年位次8000，去年8100，两年晃了100名，稳得很，预估今年也差不多""位次从前年8000缩到去年6000，这专业在往上走，今年估计得更热"
+- 【年份铁律】提到分数必须带年份！2024=前年，2025=去年，2026=今年。推测今年的分数/位次必须说"预估""估计""大概率"。禁止把前年(2024)的分数说成"去年"，禁止把去年(2025)的分数说成"今年"
+- 【只用两年数据】绝不说"近三年""过去几年"——你只有2024和2025两年数据
+- 系统开头会给你"用户位次参考"，里面有用户分数对应的全省位次，用它说话
+- 绝对禁止说"根据数据显示""查询到""数据库显示"这类第三方口吻
+- 正确说法："我看了河北前年和去年的数据""位次连年稳在8000，这学校挺实在""去年比前年位次缩了2000，抢的人越来越多了"
+- 数据的权威就是你的权威。你不是在转述数据，是你在用分和位次给判断
+- 数据不全→照常用你的训练知识给方向性判断，别编假数字
+
+【关于院校背景数据库 — 新增】
+- 录取专业行末尾可能出现 [学科评估: 计算机科学与技术 A+]，这是教育部官方第四轮学科评估等级（A+ > A > A- > B+ > B > B- > C+ > C > C-）
+- A+表示该学科全国前2名或前2%，A是前2%~5%，A-是前5%~10%——有A+或A的学科代表全国顶尖水平
+- 相关院校背景区会展示学校标签 [985 · 211 · 双一流]、软科排名、双一流建设学科、顶尖学科列表
+- 你可以自然地说"计算机是他们A+学科，全国前几的水平""这学校虽然是211但计算机有A-，比有些985还硬"
+- 985/211/双一流/自主划线/研究生院 这些标签在院校背景里有就有，没有就别说——别给没标签的学校硬加
+- 照样不能说"数据显示""搜索到"，要说"我查了一下这个学校的底子""教育部学科评估里它的XX是A+"
+
+【你的内在矛盾 — 不用主动提，但可以在相关时自然流露】
+你自己就是跨专业成功的活证据（给排水→教育博主），但你劝人选对专业。你靠"为穷人说话"赚了几个亿。你告诫年轻人注意身体，自己每天工作十几小时。这些矛盾让你更真实。
+
+【回答格式要求】
+- 如果对方信息不完整，先灵魂追问，不要直接给建议
+- 如果信息完整，用 铺垫→反转→金句→重复 的节奏
+- 每个回答结尾必须有一句能被截图传播的金句
+- 说"我跟你说"开头至少一次
+
+
+【数据缺失时的行为 — 铁律】
+- 如果给你的录取数据里没有用户问的省份/分数段，你必须先说明："我跟你说，我手上这份数据主要是河北近两年的，你问的XX省我数据不全，以下判断基于我自己的经验，不是具体分数线"
+- KB 数据为空或明显不相关时，你必须说"我这边查不到XX的精确数据"，然后基于你的训练知识给方向性判断
+- 宁可说"这方面我不确定"也不能硬编具体数字
+- 河北省的数据就说是河北省的，别假装是全国的
+- 如果系统开头有"⚠️ 重要提醒：数据仅限河北"，你必须复述这个提醒给用户
+用户如果说「退出」「切回正常」「不用扮演了」，你就正常回答问题。`;
+
+// ─── Auth System (login handled by independent script above) ───
+const SESSION_KEY = 'zxf_sessions';
+let currentUser = null;
+let viewAsUser = null;
+let appData = null;
+
+// DEFAULT_REPO 已在登录脚本中声明，此处直接使用
+
+// ─── Server / GitHub helpers ───
+function getServerUrl() {
+  try {
+    const c = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}');
+    const url = c.serverUrl || '';
+    // Guard against corrupted data like "[object Object]"
+    if (typeof url !== 'string' || url.startsWith('[object')) return '';
+    return url;
+  }
+  catch(e) { return ''; }
+}
+// ngrok free tier shows a browser warning interstitial — this header skips it
+function serverFetch(url, options) {
+  options = options || {};
+  options.headers = Object.assign({}, options.headers || {}, { 'ngrok-skip-browser-warning': 'true' });
+  return fetch(url, options);
+}
+function getGithubConfig() {
+  try { const c = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}'); return { token: c.githubToken || '', repo: c.githubRepo || DEFAULT_REPO, path: c.githubPath || 'users.json' }; }
+  catch(e) { return { token: '', repo: DEFAULT_REPO, path: 'users.json' }; }
+}
+function ghB642utf8(b64) { try { return decodeURIComponent(escape(atob(b64))); } catch(e) { return atob(b64); } }
+function ghUtf82b64(str) { return btoa(unescape(encodeURIComponent(str))); }
+
+async function githubFetchUsers() {
+  const serverUrl = getServerUrl();
+  if (serverUrl) {
+    const resp = await serverFetch(serverUrl + '/api/users');
+    if (!resp.ok) throw new Error('Server HTTP ' + resp.status);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || 'Server error');
+    const users = {};
+    for (const [k, v] of Object.entries(data.users || {})) {
+      if (k === '_app_config') { users[k] = v; continue; }
+      users[k] = { password: '', role: v.role, createdAt: v.createdAt };
+    }
+    return { users, sha: data._sha || '' };
+  }
+  const cfg = getGithubConfig();
+  if (!cfg.repo) throw new Error('GitHub 未配置');
+
+  // Try GitHub API first
+  try {
+    const headers = { 'Accept': 'application/vnd.github.v3+json' };
+    if (cfg.token) headers['Authorization'] = 'Bearer ' + cfg.token;
+    const resp = await fetch('https://api.github.com/repos/' + cfg.repo + '/contents/' + cfg.path, { headers });
+    if (!resp.ok) throw new Error('GitHub API ' + resp.status);
+    const data = await resp.json();
+    const users = JSON.parse(ghB642utf8(data.content));
+    return { users, sha: data.sha };
+  } catch(apiErr) {
+    console.warn('[githubFetchUsers] API failed, trying raw CDN:', apiErr.message);
+    // Fallback: raw.githubusercontent.com (no auth, no rate limit)
+    const rawUrl = 'https://raw.githubusercontent.com/' + cfg.repo + '/main/' + cfg.path;
+    const resp = await fetch(rawUrl);
+    if (!resp.ok) throw new Error('GitHub raw CDN ' + resp.status);
+    const users = await resp.json();
+    console.log('[githubFetchUsers] Raw CDN success');
+    return { users, sha: '' };
+  }
+}
+
+async function githubSaveUsers(users, commitMsg) {
+  const serverUrl = getServerUrl();
+  if (serverUrl) {
+    // Server handles user save via /api/users POST
+    // We need to save each user individually or batch
+    // For admin operations, use the server endpoint
+    const cfg = getGithubConfig();
+    const config = { serverUrl, repo: cfg.repo, path: cfg.path };
+    // Use a single request with all users data
+    const resp = await serverFetch(serverUrl + '/api/users/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ users, message: commitMsg || 'Update users.json' })
+    });
+    if (!resp.ok) throw new Error('Server HTTP ' + resp.status);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || 'Server error');
+    localStorage.setItem('zxf_cached_users', JSON.stringify(users));
+    window._zxfLogin.users = users;
+    return data;
+  }
+  const cfg = getGithubConfig();
+  if (!cfg.token || !cfg.repo) throw new Error('GitHub 未配置');
+  let sha = '';
+  let existing = {};
+  try { const r = await githubFetchUsers(); sha = r.sha; existing = r.users; } catch(e) {}
+  if (existing._app_config) users._app_config = existing._app_config;
+  const body = {
+    message: commitMsg || 'Update users.json',
+    content: ghUtf82b64(JSON.stringify(users, null, 2)),
+    branch: cfg.branch || 'main'
+  };
+  if (sha) body.sha = sha;
+  const resp = await fetch('https://api.github.com/repos/' + cfg.repo + '/contents/' + cfg.path, {
+    method: 'PUT',
+    headers: { 'Authorization': 'Bearer ' + cfg.token, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(()=>({}));
+    throw new Error(err.message || 'GitHub API ' + resp.status);
+  }
+  const data = await resp.json();
+  localStorage.setItem('zxf_cached_users', JSON.stringify(users));
+  window._zxfLogin.users = users;
+  window._zxfLogin._sha = data.content.sha;
+  return data;
+}
+
+// ─── Session sync to GitHub ───
+function getSessionsConfig() {
+  const cfg = getGithubConfig();
+  try {
+    const saved = JSON.parse(localStorage.getItem('zxf_config_v3') || '{}');
+    cfg.sessionsPath = saved.sessionsPath || 'sessions.json';
+  } catch(e) { cfg.sessionsPath = 'sessions.json'; }
+  return cfg;
+}
+
+async function githubFetchSessions(username) {
+  const serverUrl = getServerUrl();
+  if (serverUrl) {
+    try {
+      const resp = await serverFetch(serverUrl + '/api/sessions/' + encodeURIComponent(username));
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return { sessions: data.sessions || [], sha: data._sha || '', all: {} };
+    } catch(e) { console.warn('[Sync] Server fetch sessions failed:', e.message); return null; }
+  }
+  const cfg = getSessionsConfig();
+  if (!cfg.token || !cfg.repo) return null;
+  try {
+    const headers = { 'Accept': 'application/vnd.github.v3+json' };
+    if (cfg.token) headers['Authorization'] = 'Bearer ' + cfg.token;
+    const resp = await fetch('https://api.github.com/repos/' + cfg.repo + '/contents/' + cfg.sessionsPath, { headers });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const allSessions = JSON.parse(ghB642utf8(data.content));
+    return { sessions: allSessions[username] || [], sha: data.sha, all: allSessions };
+  } catch(e) { console.warn('[Sync] Fetch sessions failed:', e.message); return null; }
+}
+
+async function githubSaveSessions(username, sessions) {
+  const serverUrl = getServerUrl();
+  if (serverUrl) {
+    try {
+      const resp = await serverFetch(serverUrl + '/api/sessions/' + encodeURIComponent(username), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessions })
+      });
+      if (resp.ok) {
+        console.log('[Sync] Sessions saved via server for', username);
+        if (syncIndicator) { syncIndicator.style.display = ''; syncIndicator.textContent = '已同步 ✓'; setTimeout(() => { syncIndicator.style.display = 'none'; }, 2500); }
+      }
+      return;
+    } catch(e) { console.warn('[Sync] Server save sessions failed:', e.message); return; }
+  }
+  const cfg = getSessionsConfig();
+  if (!cfg.token || !cfg.repo) return;
+  try {
+    let sha = ''; let allSessions = {};
+    const fetched = await githubFetchSessions(username);
+    if (fetched) { sha = fetched.sha; allSessions = fetched.all; }
+    allSessions[username] = sessions;
+    const body = {
+      message: 'Update sessions for ' + username,
+      content: ghUtf82b64(JSON.stringify(allSessions, null, 2)),
+      branch: 'main'
+    };
+    if (sha) body.sha = sha;
+    const resp = await fetch('https://api.github.com/repos/' + cfg.repo + '/contents/' + cfg.sessionsPath, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + cfg.token, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (resp.ok) {
+      console.log('[Sync] Sessions saved to GitHub for', username);
+      if (syncIndicator) { syncIndicator.style.display = ''; syncIndicator.textContent = '已同步 ✓'; setTimeout(() => { syncIndicator.style.display = 'none'; }, 2500); }
+    }
+  } catch(e) { console.warn('[Sync] Save sessions failed:', e.message); }
+}
+
+function mergeSessions(localList, remoteList) {
+  if (!remoteList || remoteList.length === 0) return localList || [];
+  if (!localList || localList.length === 0) return remoteList;
+  const map = new Map();
+  for (const s of localList) map.set(s.id, s);
+  for (const s of remoteList) {
+    const existing = map.get(s.id);
+    if (!existing || new Date(s.updatedAt) > new Date(existing.updatedAt)) {
+      map.set(s.id, s);
+    }
+  }
+  return [...map.values()].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+}
+
+function loadAppData() {
+  appData = { users: window._zxfLogin ? JSON.parse(JSON.stringify(window._zxfLogin.users)) : {} };
+  // Load sessions from localStorage (sessions are local, users are GitHub)
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (raw) {
+      const stored = JSON.parse(raw);
+      if (stored && typeof stored === 'object') {
+        for (const u of Object.keys(stored)) {
+          if (appData.users[u]) { appData.users[u].sessions = stored[u].sessions || []; }
+        }
+        // Also carry users that have sessions but aren't in current users list
+        for (const u of Object.keys(stored)) {
+          if (!appData.users[u] && stored[u].sessions) {
+            appData.users[u] = { password: '', role: 'user', sessions: stored[u].sessions };
+          }
+        }
+      }
+    }
+  } catch(e) {}
+  // Ensure sessions arrays exist
+  for (const u of Object.keys(appData.users)) {
+    if (!appData.users[u].sessions) appData.users[u].sessions = [];
+    if (!appData.users[u].role) appData.users[u].role = 'user';
+    if (!appData.users[u].password) appData.users[u].password = '';
+  }
+}
+function saveAppData(username) {
+  // Save sessions to localStorage
+  const sessions = {};
+  for (const u of Object.keys(appData.users)) {
+    if (appData.users[u].sessions && appData.users[u].sessions.length > 0) {
+      sessions[u] = { sessions: appData.users[u].sessions };
+    }
+  }
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(sessions)); } catch(e) {}
+  // Async push to GitHub (fire and forget, don't block UI)
+  const u = username || getEffectiveUser();
+  if (u && appData.users[u] && appData.users[u].sessions) {
+    githubSaveSessions(u, appData.users[u].sessions).catch(() => {});
+  }
+}
+
+// ─── Enhanced Sync ───
+let _syncTimer = null;
+let _syncLastTime = 0;
+const SYNC_COOLDOWN = 10000;
+const SYNC_INTERVAL = 180000;
+
+function saveAppDataLocal() {
+  const sessions = {};
+  for (const u of Object.keys(appData.users)) {
+    if (appData.users[u].sessions && appData.users[u].sessions.length > 0) {
+      sessions[u] = { sessions: appData.users[u].sessions };
+    }
+  }
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(sessions)); } catch(e) {}
+}
+
+async function syncNow(showToastFlag) {
+  const u = getEffectiveUser();
+  if (!u) return;
+  const now = Date.now();
+  if (now - _syncLastTime < 2000) return;
+  _syncLastTime = now;
+
+  if (syncIndicator) {
+    syncIndicator.style.display = '';
+    syncIndicator.textContent = '同步中...';
+    syncIndicator.style.background = '#fef0e6';
+    syncIndicator.style.color = '#d4752b';
+  }
+
+  try {
+    const remote = await githubFetchSessions(u);
+    const remoteSessions = remote ? remote.sessions : [];
+    const localSessions = (appData.users[u] && appData.users[u].sessions) ? appData.users[u].sessions.slice() : [];
+    const merged = mergeSessions(localSessions, remoteSessions);
+
+    if (!appData.users[u]) appData.users[u] = { password: '', role: 'user', createdAt: new Date().toISOString() };
+    appData.users[u].sessions = merged;
+    saveAppDataLocal();
+
+    const localOnly = localSessions.filter(ls => !remoteSessions.some(rs => rs.id === ls.id));
+    const localNewer = localSessions.filter(ls => {
+      const rs = remoteSessions.find(r => r.id === ls.id);
+      return rs && new Date(ls.updatedAt) > new Date(rs.updatedAt);
+    });
+    if (localOnly.length > 0 || localNewer.length > 0) {
+      await githubSaveSessions(u, merged);
+    }
+
+    if (syncIndicator) {
+      syncIndicator.textContent = '已同步';
+      syncIndicator.style.background = '#e6f7ed';
+      syncIndicator.style.color = '#22a85d';
+    }
+
+    renderSessionList();
+    if (showToastFlag) showToast('同步完成');
+  } catch(e) {
+    console.warn('[Sync] Sync failed:', e.message);
+    if (syncIndicator) {
+      syncIndicator.textContent = '同步失败';
+      syncIndicator.style.background = '#fee';
+      syncIndicator.style.color = '#e5534b';
+    }
+    if (showToastFlag) showToast('同步失败: ' + e.message);
+  } finally {
+    if (_syncStatusTimeout) clearTimeout(_syncStatusTimeout);
+    _syncStatusTimeout = setTimeout(() => {
+      if (syncIndicator && syncIndicator.textContent !== '同步中...') {
+        syncIndicator.style.display = 'none';
+      }
+    }, 3000);
+  }
+}
+let _syncStatusTimeout = null;
+
+function setupAutoSync() {
+  if (_syncTimer) { clearInterval(_syncTimer); _syncTimer = null; }
+  _syncTimer = setInterval(() => {
+    const u = getEffectiveUser();
+    if (u && document.visibilityState === 'visible') {
+      syncNow(false);
+    }
+  }, SYNC_INTERVAL);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      const u = getEffectiveUser();
+      if (u && Date.now() - _syncLastTime > SYNC_COOLDOWN) {
+        syncNow(false);
+      }
+    }
+  });
+
+  console.log('[Sync] Auto-sync enabled (every ' + (SYNC_INTERVAL/60000) + 'min + on focus)');
+}
+
+async function syncUsersFromGithub() {
+  try {
+    const { users } = await githubFetchUsers();
+    // Merge with existing sessions
+    for (const u of Object.keys(users)) {
+      if (appData.users[u] && appData.users[u].sessions) {
+        users[u].sessions = appData.users[u].sessions;
+      } else if (!users[u].sessions) {
+        users[u].sessions = [];
+      }
+      if (!users[u].createdAt) users[u].createdAt = new Date().toISOString();
+    }
+    appData.users = users;
+    window._zxfLogin.users = users;
+    localStorage.setItem('zxf_cached_users', JSON.stringify(users));
+    return true;
+  } catch(e) {
+    console.warn('[ZxfApp] Sync failed:', e.message);
+    return false;
+  }
+}
+
+function doLogout() {
+  currentUser = null; viewAsUser = null;
+  document.getElementById('loginOverlay').style.display = 'flex';
+  document.getElementById('loginUser').value = '';
+  document.getElementById('loginPass').value = '';
+  chatInner.innerHTML = '';
+  sessionList.innerHTML = '';
+  analyticsView.classList.remove('show');
+  chatWrap.style.display = '';
+  inputArea.style.display = '';
+}
+
+function getEffectiveUser() {
+  if (currentUser && currentUser.role === 'admin' && viewAsUser) return viewAsUser;
+  return currentUser ? currentUser.username : null;
+}
+
+function getSessions(username) {
+  const u = username || getEffectiveUser();
+  if (!u || !appData.users[u]) return [];
+  return appData.users[u].sessions || [];
+}
+function saveSessionsForUser(username, sessions) {
+  if (appData.users[username]) appData.users[username].sessions = sessions;
+  saveAppData(username);
+}
+
+function getEffectiveSessions() { return getSessions(getEffectiveUser()); }
+function saveEffectiveSessions(s) { saveSessionsForUser(getEffectiveUser(), s); }
+
+// ─── Keyword Tags ───
+const TAG_RULES = [
+  { keys: ['高考','志愿','填志愿','录取','分数线','批次','滑档','退档','调剂','提前批','一本','二本','985','211','双一流'], tag: '高考志愿' },
+  { keys: ['考研','研究生','保研','推免','硕士','博士','学硕','专硕'], tag: '考研' },
+  { keys: ['计算机','编程','软件','AI','人工智能','算法','前端','后端','开发','程序员','大模型','机器学习'], tag: '计算机/AI' },
+  { keys: ['金融','银行','证券','基金','投行','保险','会计','财务','审计','经济'], tag: '金融财经' },
+  { keys: ['医学','临床','医生','护士','药学','口腔','牙医','护理','中医'], tag: '医学' },
+  { keys: ['法学','律师','法律','司法','法考','法官'], tag: '法学' },
+  { keys: ['师范','教师','老师','教育','教资','编制','考编'], tag: '师范/教育' },
+  { keys: ['生化环材','生物','化学','环境','材料','天坑'], tag: '天坑专业' },
+  { keys: ['就业','工作','薪资','工资','收入','招聘','找工作','offer','实习','裁员'], tag: '就业薪资' },
+  { keys: ['城市','北京','上海','广州','深圳','杭州','苏州','南京','成都','武汉'], tag: '城市选择' },
+  { keys: ['艺术','美术','音乐','舞蹈','表演','设计','导演'], tag: '艺术' },
+  { keys: ['文科','理科','工科','选科','文理分科'], tag: '文理分科' },
+  { keys: ['留学','出国','托福','雅思','海外'], tag: '留学' },
+  { keys: ['考公','公务员','选调','国考','省考','体制内'], tag: '考公考编' },
+  { keys: ['电气','机械','土木','建筑','化工','能源','自动化','电子','通信','芯片','半导体'], tag: '工科专业' },
+];
+function autoTag(text) {
+  const tags = new Set();
+  const lower = text.toLowerCase();
+  for (const rule of TAG_RULES)
+    for (const k of rule.keys)
+      if (lower.includes(k.toLowerCase())) { tags.add(rule.tag); break; }
+  return [...tags];
+}
+
+// ─── DOM Refs ───
+const chatInner = document.getElementById('chatInner');
+const chatWrap = document.getElementById('chatWrap');
+const userInput = document.getElementById('userInput');
+const sendBtn = document.getElementById('sendBtn');
+const welcomeMsg = document.getElementById('welcomeMsg');
+const sessionList = document.getElementById('sessionList');
+const curSessionName = document.getElementById('curSessionName');
+const msgCount = document.getElementById('msgCount');
+const analyticsView = document.getElementById('analyticsView');
+const inputArea = document.getElementById('inputArea');
+const settingsModal = document.getElementById('settingsModal');
+const apiKeyInput = document.getElementById('apiKey');
+const modelSelect = document.getElementById('modelSelect');
+const kbIndicator = document.getElementById('kbIndicator');
+const syncIndicator = document.getElementById('syncIndicator');
+const viewUserSelect = document.getElementById('viewUserSelect');
+const adminUserList = document.getElementById('adminUserList');
+
+let currentSessionId = null;
+let isFirstMsg = true;
+let charts = {};
+
+// ─── Init after login ───
+async function initApp() {
+  loadConfig();
+  // 检查知识库状态
+  if (!getServerUrl()) { updateKBStatus('noconfig'); }
+  renderUserBadge();
+  // Pull sessions from GitHub (cross-device sync)
+  const u = getEffectiveUser();
+  if (u) {
+    const fetched = await githubFetchSessions(u);
+    if (fetched && fetched.sessions.length > 0) {
+      const localSessions = appData.users[u] ? (appData.users[u].sessions || []) : [];
+      const merged = mergeSessions(localSessions, fetched.sessions);
+      if (!appData.users[u]) appData.users[u] = { password: '', role: 'user', createdAt: new Date().toISOString() };
+      appData.users[u].sessions = merged;
+      saveAppData(u);
+      if (syncIndicator) { syncIndicator.style.display = ''; syncIndicator.textContent = '已同步 ✓'; setTimeout(() => { syncIndicator.style.display = 'none'; }, 2500); }
+    }
+  }
+  renderSessionList();
+  if (currentUser.role === 'admin') setupAdminUI();
+  // Load first session or show welcome
+  const sessions = getEffectiveSessions();
+  if (sessions.length > 0) {
+    switchSession(sessions[0].id);
+  }
+  // Start auto-sync (periodic + on focus)
+  setupAutoSync();
+}
+
+function renderUserBadge() {
+  const badge = document.getElementById('userBadge');
+  const roleClass = currentUser.role === 'admin' ? 'admin' : 'user';
+  badge.innerHTML = `
+    <span class="u-name">👤 ${currentUser.username}</span>
+    <span class="role-tag ${roleClass}">${currentUser.role==='admin'?'管理员':'学生'}</span>
+    <button class="logout-btn" onclick="doLogout()">退出</button>`;
+}
+
+function setupAdminUI() {
+  adminUserList.style.display = '';
+  document.getElementById('adminUserTable').style.display = '';
+  document.getElementById('adminBar').innerHTML = '<button class="btn btn-sm btn-outline" onclick="syncUsersFromGithub().then(()=>{updateViewUserSelect();renderSessionList();showToast(\'已从 GitHub 同步\');}).catch(e=>showToast(\'同步失败: \'+e.message))">🔄 同步</button><button class="btn btn-sm btn-outline" onclick="openUserManage()">👥 用户管理</button>';
+  updateViewUserSelect();
+}
+
+function updateViewUserSelect() {
+  viewUserSelect.innerHTML = '<option value="">-- 我的对话 --</option>' +
+    Object.keys(appData.users).filter(u => u !== currentUser.username).map(u =>
+      `<option value="${u}" ${viewAsUser===u?'selected':''}>${u} ${appData.users[u].role==='admin'?'(管理员)':''}</option>`
+    ).join('');
+}
+
+async function switchViewUser(username) {
+  viewAsUser = username || null;
+  currentSessionId = null;
+  chatInner.innerHTML = '';
+  // If admin viewing another user, pull sessions from GitHub
+  if (username && currentUser && currentUser.role === 'admin') {
+    const fetched = await githubFetchSessions(username);
+    if (fetched && fetched.sessions.length > 0) {
+      // Merge with local
+      const localSessions = appData.users[username] ? (appData.users[username].sessions || []) : [];
+      const merged = mergeSessions(localSessions, fetched.sessions);
+      if (!appData.users[username]) appData.users[username] = { password: '', role: 'user', createdAt: new Date().toISOString() };
+      appData.users[username].sessions = merged;
+      // Update local cache
+      saveAppData(username);
+    }
+  }
+  renderSessionList();
+  const sessions = getEffectiveSessions();
+  if (sessions.length > 0) switchSession(sessions[0].id);
+  else {
+    chatInner.innerHTML = `<div class="welcome" id="welcomeMsg"><div class="welcome-icon">峰</div><h2>${username || '我'} 的对话</h2><p class="tagline">该用户暂无对话记录</p></div>`;
+  }
+  if (analyticsView.classList.contains('show')) renderAnalytics();
+}
+
+async function adminCreateUser() {
+  const name = document.getElementById('newUserName').value.trim();
+  const pass = document.getElementById('newUserPass').value.trim();
+  if (!name || !pass) { alert('请输入用户名和密码'); return; }
+  if (appData.users[name]) { alert('用户名已存在'); return; }
+  appData.users[name] = { password: pass, role: 'user', createdAt: new Date().toISOString(), sessions: [] };
+  // Push to GitHub
+  try {
+    const usersForGithub = {};
+    for (const u of Object.keys(appData.users)) {
+      usersForGithub[u] = { password: appData.users[u].password, role: appData.users[u].role, createdAt: appData.users[u].createdAt || new Date().toISOString() };
+    }
+    await githubSaveUsers(usersForGithub, 'Add user ' + name);
+    updateViewUserSelect();
+    renderAnalytics();
+    document.getElementById('newUserName').value = '';
+    document.getElementById('newUserPass').value = '';
+    showToast('用户 ' + name + ' 已创建并同步到 GitHub');
+  } catch(e) {
+    alert('GitHub 同步失败: ' + e.message + '\n用户已在本地创建，但未同步到 GitHub。');
+  }
+}
+async function adminDeleteUser(username) {
+  if (username === 'admin') { alert('不能删除管理员'); return; }
+  if (!confirm('确定删除用户 ' + username + ' 及其所有对话？')) return;
+  delete appData.users[username];
+  // Push to GitHub
+  try {
+    const usersForGithub = {};
+    for (const u of Object.keys(appData.users)) {
+      if (u === username) continue;
+      usersForGithub[u] = { password: appData.users[u].password, role: appData.users[u].role, createdAt: appData.users[u].createdAt || new Date().toISOString() };
+    }
+    await githubSaveUsers(usersForGithub, 'Delete user ' + username);
+    updateViewUserSelect();
+    if (viewAsUser === username) { viewAsUser = null; switchViewUser(null); }
+    renderAnalytics();
+    showToast('用户已删除并同步到 GitHub');
+  } catch(e) {
+    alert('GitHub 同步失败: ' + e.message + '\n用户已在本地删除，但未同步到 GitHub。');
+  }
+}
+async function adminChangePassword(username) {
+  const newPass = prompt('为 ' + username + ' 输入新密码：');
+  if (!newPass) return;
+  if (!appData.users[username]) { alert('用户不存在'); return; }
+  appData.users[username].password = newPass;
+  try {
+    const usersForGithub = {};
+    for (const u of Object.keys(appData.users)) {
+      usersForGithub[u] = { password: appData.users[u].password, role: appData.users[u].role, createdAt: appData.users[u].createdAt || new Date().toISOString() };
+    }
+    await githubSaveUsers(usersForGithub, 'Change password for ' + username);
+    showToast(username + ' 密码已更新并同步到 GitHub');
+  } catch(e) {
+    alert('GitHub 同步失败: ' + e.message);
+  }
+}
+
+// ─── Sessions ───
+function getCurrentSession() {
+  return getEffectiveSessions().find(s => s.id === currentSessionId);
+}
+function newSession() {
+  const s = { id: Date.now().toString(36)+Math.random().toString(36).slice(2,6), name: '新对话', messages: [], tags: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  const sessions = getEffectiveSessions();
+  sessions.unshift(s);
+  saveEffectiveSessions(sessions);
+  switchSession(s.id);
+  renderSessionList();
+}
+function switchSession(id) {
+  currentSessionId = id;
+  const s = getCurrentSession();
+  chatInner.innerHTML = '';
+  if (!s || s.messages.length === 0) {
+    chatInner.innerHTML = `<div class="welcome" id="welcomeMsg"><div class="welcome-icon">峰</div><h2>我是张雪峰</h2><p class="tagline">选择比努力更重要，但「有得选」的前提是你足够努力</p><div class="quick-chips"><button class="chip" onclick="quickAsk('我孩子560分河南的，想学金融，你怎么看？')">560分河南，想学金融</button><button class="chip" onclick="quickAsk('双非考研到985值不值？')">双非考研到985值不值</button><button class="chip" onclick="quickAsk('家里没钱，该不该为了理想学艺术？')">家里没钱该学艺术吗</button><button class="chip" onclick="quickAsk('AI时代学什么专业还靠谱？')">AI时代什么专业靠谱</button><button class="chip" onclick="quickAsk('生化环材真的是天坑吗？')">生化环材是天坑吗</button></div></div>`;
+  } else {
+    s.messages.forEach(m => addMsgToDom(m.role, m.content, false, m.time));
+  }
+  if (s) curSessionName.querySelector('input').value = s.name;
+  updateMsgCount();
+  renderSessionList();
+  scrollDown();
+  document.getElementById('sidebar').classList.remove('open');
+}
+function deleteSession(id, e) {
+  e.stopPropagation();
+  if (!confirm('确定删除？')) return;
+  let sessions = getEffectiveSessions();
+  sessions = sessions.filter(s => s.id !== id);
+  saveEffectiveSessions(sessions);
+  if (currentSessionId === id) {
+    currentSessionId = sessions.length > 0 ? sessions[0].id : null;
+    if (currentSessionId) switchSession(currentSessionId);
+    else { chatInner.innerHTML = ''; }
+  }
+  renderSessionList();
+}
+function renameSession(name) {
+  const s = getCurrentSession();
+  if (s) { s.name = name || '未命名'; saveEffectiveSessions(getEffectiveSessions()); renderSessionList(); }
+}
+function updateMsgCount() { const s = getCurrentSession(); msgCount.textContent = s ? `${s.messages.length} 条消息` : ''; }
+
+function renderSessionList() {
+  const sessions = getEffectiveSessions();
+  if (sessions.length === 0) { sessionList.innerHTML = '<div class="no-sessions">还没有对话记录<br>点「新对话」开始吧</div>'; return; }
+  sessionList.innerHTML = sessions.map(s => {
+    const tags = s.tags.slice(0,3).map(t=>`<span>${t}</span>`).join('');
+    const d = new Date(s.updatedAt);
+    const ds = isToday(d) ? '今天 '+fmtTime(d) : fmtDate(d);
+    const owner = (currentUser.role==='admin'&&!viewAsUser) ? `<div class="sess-owner">👤 ${getSessionOwner(s.id)}</div>` : '';
+    const active = s.id===currentSessionId?' active':'';
+    return `<div class="session-item${active}" onclick="switchSession('${s.id}')"><button class="del-btn" onclick="deleteSession('${s.id}',event)" title="删除">×</button><div class="sess-title">${escHtml(s.name)}</div><div class="sess-meta"><span>${ds}</span><span>${s.messages.length}条</span></div>${owner}${tags?'<div class="sess-tags">'+tags+'</div>':''}</div>`;
+  }).join('');
+}
+function getSessionOwner(sid) {
+  for (const [uname, udata] of Object.entries(appData.users))
+    if (udata.sessions && udata.sessions.some(s => s.id === sid)) return uname;
+  return '';
+}
+
+function isToday(d) { const n=new Date(); return d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth()&&d.getDate()===n.getDate(); }
+function fmtTime(d) { return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0'); }
+function fmtDate(d) { return (d.getMonth()+1)+'/'+d.getDate(); }
+function escHtml(s) { const div=document.createElement('div'); div.textContent=s; return div.innerHTML; }
+
+// ─── Messages ───
+function addMsgToDom(role, text, isError, time) {
+  const w = document.getElementById('welcomeMsg'); if (w) w.remove();
+  const div = document.createElement('div');
+  div.className = 'msg ' + (role==='user'?'user':'ai');
+  div.innerHTML = `<div class="msg-avatar">${role==='user'?'你':'峰'}</div><div class="msg-body"><div class="msg-meta"><span class="msg-name">${role==='user'?'你':'张雪峰'}</span><span class="msg-time">${time||fmtTime(new Date())}</span></div><div class="msg-bubble"><div class="msg-text${isError?' error':''}">${escHtml(text)}</div></div></div>`;
+  chatInner.appendChild(div); scrollDown();
+}
+function addMsg(role, text, isError) {
+  const time = fmtTime(new Date());
+  addMsgToDom(role, text, isError, time);
+  const s = getCurrentSession();
+  if (s) {
+    s.messages.push({ role, content: text, time });
+    s.updatedAt = new Date().toISOString();
+    if (role==='user') { const nt = autoTag(text); for (const t of nt) { if (!s.tags.includes(t)) s.tags.push(t); } }
+    saveEffectiveSessions(getEffectiveSessions());
+    updateMsgCount(); renderSessionList();
+  }
+}
+function addTyping() {
+  const div = document.createElement('div'); div.className='msg ai'; div.id='typingMsg';
+  div.innerHTML = `<div class="msg-avatar" style="background:linear-gradient(135deg,#f0883e,#e5534b);color:#fff;">峰</div><div class="msg-body"><div class="msg-meta"><span class="msg-name">张雪峰</span></div><div class="msg-bubble"><div class="typing"><span></span><span></span><span></span></div></div></div>`;
+  chatInner.appendChild(div); scrollDown();
+}
+function removeTyping() { const el=document.getElementById('typingMsg'); if(el)el.remove(); }
+function scrollDown() { chatWrap.scrollTo({top:chatWrap.scrollHeight,behavior:'smooth'}); }
+
+// ─── Config ───
+function loadConfig() {
+  const saved = localStorage.getItem('zxf_config_v3');
+  if (saved) { try {
+    const c=JSON.parse(saved);
+    apiKeyInput.value=c.apiKey||'';
+    modelSelect.value=c.model||'deepseek-v4-flash';
+    // GitHub fields
+    const gt = document.getElementById('githubToken'); if(gt) gt.value = c.githubToken || '';
+    const gr = document.getElementById('githubRepo'); if(gr) gr.value = c.githubRepo || DEFAULT_REPO;
+    const gp = document.getElementById('githubPath'); if(gp) gp.value = c.githubPath || 'users.json';
+    const sp = document.getElementById('sessionsPath'); if(sp) sp.value = c.sessionsPath || 'sessions.json';
+    const su = document.getElementById('serverUrl'); if(su) su.value = c.serverUrl || '';
+  } catch(e) {} }
+}
+function saveConfig() {
+  const gt = document.getElementById('githubToken');
+  const gr = document.getElementById('githubRepo');
+  const gp = document.getElementById('githubPath');
+  const sp = document.getElementById('sessionsPath');
+  const su = document.getElementById('serverUrl');
+  const token = gt ? gt.value.trim() : '';
+  const repo = gr ? gr.value.trim() : '';
+  const path = gp ? gp.value.trim() || 'users.json' : 'users.json';
+  const sessionsPath = sp ? sp.value.trim() || 'sessions.json' : 'sessions.json';
+  const serverUrl = su ? su.value.trim().replace(/\/+$/, '') : '';
+  localStorage.setItem('zxf_config_v3', JSON.stringify({
+    apiKey: apiKeyInput.value.trim(),
+    model: modelSelect.value,
+    serverUrl,
+    githubToken: token, githubRepo: repo, githubPath: path, sessionsPath: sessionsPath
+  }));
+  closeSettings(); showToast('设置已保存');
+  // 更新 KB 状态
+  if (!getServerUrl()) { updateKBStatus('noconfig'); } else { updateKBStatus('configured'); }
+  // Refresh login screen state
+  if (window._zxfRefreshLogin) window._zxfRefreshLogin();
+  // Background: sync _app_config to GitHub so other devices can discover config
+  if (token && repo) {
+    syncAppConfigToGithub(token, repo, path, sessionsPath);
+  }
+}
+async function syncAppConfigToGithub(token, repo, path, sessionsPath) {
+  try {
+    let sha = ''; let existing = {};
+    try {
+      const resp = await fetch('https://api.github.com/repos/' + repo + '/contents/' + path, {
+        headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github.v3+json' }
+      });
+      if (resp.ok) {
+        const d = await resp.json();
+        sha = d.sha;
+        existing = JSON.parse(ghB642utf8(d.content));
+      }
+    } catch(e) {}
+    existing._app_config = { repo, path, sessionsPath: sessionsPath || 'sessions.json', serverUrl: getServerUrl() };
+    const body = {
+      message: 'Update app config',
+      content: ghUtf82b64(JSON.stringify(existing, null, 2)),
+      branch: 'main'
+    };
+    if (sha) body.sha = sha;
+    await fetch('https://api.github.com/repos/' + repo + '/contents/' + path, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  } catch(e) { console.warn('[ZxfApp] Config sync to GitHub failed:', e.message); }
+}
+function openSettings() {
+  loadConfig();
+  const adminSection = document.getElementById('adminSettingsSection');
+  if (adminSection) {
+    adminSection.style.display = (currentUser && currentUser.role === 'admin') ? '' : 'none';
+  }
+  settingsModal.classList.add('show');
+}
+function closeSettings() { settingsModal.classList.remove('show'); }
+function openGithubConfig() {
+  loadConfig();
+  const adminSection = document.getElementById('adminSettingsSection');
+  if (adminSection) {
+    adminSection.style.display = (!currentUser || currentUser.role === 'admin') ? '' : 'none';
+  }
+  settingsModal.classList.add('show');
+}
+function updateKBStatus(status, detail, meta) {
+  if (!kbIndicator) return;
+  kbIndicator.style.display = '';
+  var province = (meta && meta.province) ? meta.province : '';
+  var kelei = (meta && meta.kelei) ? meta.kelei : '';
+  var info = [];
+  if (province) info.push(province);
+  if (kelei) info.push(kelei + '类');
+  var infostr = info.length > 0 ? ' [' + info.join(' ') + ']' : '';
+  if (status === 'success') {
+    kbIndicator.textContent = 'KB命中(' + (detail || '?') + '条)' + infostr;
+    kbIndicator.style.background = '#e6f7ed'; kbIndicator.style.color = '#22a85d';
+  } else if (status === 'configured') {
+    kbIndicator.textContent = 'KB已配置';
+    kbIndicator.style.background = '#e6f7ed'; kbIndicator.style.color = '#22a85d';
+  } else if (status === 'fail') {
+    kbIndicator.textContent = 'KB无结果' + infostr;
+    kbIndicator.style.background = '#fef0e6'; kbIndicator.style.color = '#d4752b';
+  } else if (status === 'noconfig') {
+    kbIndicator.textContent = 'KB未配置';
+    kbIndicator.style.background = '#fef0e6'; kbIndicator.style.color = '#d4752b';
+  } else if (status === 'offline') {
+    kbIndicator.textContent = 'KB离线(' + (detail || '') + ')';
+    kbIndicator.style.background = '#fee'; kbIndicator.style.color = '#e5534b';
+  }
+  setTimeout(function() { if (kbIndicator) kbIndicator.style.display = 'none'; }, 12000);
+}
+function showToast(msg) {
+  let t=document.getElementById('toast'); if(!t){t=document.createElement('div');t.id='toast';t.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1a1a2e;color:#fff;padding:8px 20px;border-radius:20px;font-size:13px;z-index:999;opacity:0;transition:opacity 0.3s;pointer-events:none;';document.body.appendChild(t);}
+  t.textContent=msg;t.style.opacity='1';clearTimeout(t._t);t._t=setTimeout(()=>{t.style.opacity='0';},2000);
+}
+
+async function initGithubData() {
+  const gt = document.getElementById('githubToken');
+  const gr = document.getElementById('githubRepo');
+  const gp = document.getElementById('githubPath');
+  const sp = document.getElementById('sessionsPath');
+  const token = gt ? gt.value.trim() : '';
+  const repo = gr ? gr.value.trim() : '';
+  const path = gp ? gp.value.trim() || 'users.json' : 'users.json';
+  const su = document.getElementById('serverUrl');
+  const sessionsPath = sp ? sp.value.trim() || 'sessions.json' : 'sessions.json';
+  const serverUrl = su ? su.value.trim().replace(/\/+$/, '') : '';
+  if (!token || !repo) { alert('请先填写 GitHub Token 和仓库名'); return; }
+  // Save config first
+  localStorage.setItem('zxf_config_v3', JSON.stringify({
+    apiKey: apiKeyInput.value.trim(), model: modelSelect.value,
+    serverUrl,
+    githubToken: token, githubRepo: repo, githubPath: path, sessionsPath: sessionsPath
+  }));
+  const defaultData = {
+    _app_config: { repo: repo, path: path, sessionsPath: sessionsPath, serverUrl: serverUrl },
+    admin: { password: 'admin123', role: 'admin', createdAt: new Date().toISOString() },
+    user: { password: 'user123', role: 'user', createdAt: new Date().toISOString() }
+  };
+  try {
+    let sha = '';
+    // Check if file already exists; if so, merge _app_config into existing data
+    let mergeData = defaultData;
+    try {
+      const resp = await fetch('https://api.github.com/repos/' + repo + '/contents/' + path, {
+        headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github.v3+json' }
+      });
+      if (resp.ok) {
+        const d = await resp.json();
+        sha = d.sha;
+        const existing = JSON.parse(ghB642utf8(d.content));
+        // Merge: keep existing users, update _app_config
+        mergeData = Object.assign({}, existing, { _app_config: defaultData._app_config });
+      }
+    } catch(e) {}
+    const body = {
+      message: 'Initialize/Update users.json',
+      content: ghUtf82b64(JSON.stringify(mergeData, null, 2)),
+      branch: 'main'
+    };
+    if (sha) body.sha = sha;
+    const resp = await fetch('https://api.github.com/repos/' + repo + '/contents/' + path, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) { const err = await resp.json().catch(()=>({})); throw new Error(err.message || 'HTTP ' + resp.status); }
+    localStorage.setItem('zxf_cached_users', JSON.stringify(mergeData));
+    // Refresh login state
+    window._zxfLogin.users = mergeData;
+    if (window._zxfRefreshLogin) window._zxfRefreshLogin();
+    showToast('配置已推送到 GitHub！其他设备现在可用快速配置。');
+  } catch(e) {
+    alert('推送失败: ' + e.message + '\n请检查 Token 权限（需要 repo 权限）和仓库名是否正确。');
+  }
+}
+
+// ─── API Call ───
+async function callAPI(userMsg) {
+  const apiKey = apiKeyInput.value.trim();
+  if (!apiKey) { addMsg('ai','哎，你先别急着问。点左下角 ⚙ 设置，把 DeepSeek API Key 填上。去 platform.deepseek.com 免费申请。',true); return; }
+  addTyping(); sendBtn.disabled=true; userInput.disabled=true;
+
+  // ─── 调用知识库检索 ───
+  let kbContext = '';
+  const serverUrl = getServerUrl();
+  if (!serverUrl) {
+    console.log('[KB] 未配置服务器地址，跳过知识库检索。请在设置中填写服务器地址。');
+    updateKBStatus('noconfig');
+  } else {
+    console.log('[KB] 正在检索:', serverUrl + '/api/kb-search', 'query:', userMsg.slice(0, 50));
+    try {
+      const kbResp = await serverFetch(serverUrl + '/api/kb-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: userMsg })
+      });
+      if (kbResp.ok) {
+        const kbData = await kbResp.json();
+          var kbMeta = kbData.meta || {};
+
+  // ─── 省份不匹配时在聊天区显示醒目警告 ───
+  if (kbMeta && kbMeta.province && !kbMeta.province_available) {
+    var warnDiv = document.getElementById('kbProvinceWarning');
+    if (!warnDiv) {
+      warnDiv = document.createElement('div');
+      warnDiv.id = 'kbProvinceWarning';
+      warnDiv.style.cssText = 'background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:10px 16px;border-radius:8px;margin:0 24px 12px;font-size:13px;text-align:center;animation:fadeUp 0.3s ease;';
+      chatInner.insertBefore(warnDiv, chatInner.firstChild);
+    }
+    warnDiv.textContent = '⚠️ 当前数据库仅有河北省录取数据，您问的【' + kbMeta.province + '】省数据不全，以下分数线均为河北参考，请勿直接套用。建议查阅当地教育考试院。';
+    warnDiv.style.display = '';
+  } else {
+    var warnDiv2 = document.getElementById('kbProvinceWarning');
+    if (warnDiv2) warnDiv2.style.display = 'none';
+  }
+        if (kbData.ok && kbData.formatted) {
+          kbContext = kbData.formatted;
+          updateKBStatus('success', kbData.count, kbMeta);
+          console.log('[KB] 检索成功，找到', kbData.count, '条');
+        } else if (kbData.ok) {
+          console.log('[KB] 检索成功，但无匹配结果 (query:', userMsg.slice(0, 50), ')');
+          updateKBStatus('fail', null, kbMeta);
+        } else {
+          console.warn('[KB] 服务器错误:', kbData.error);
+          updateKBStatus('fail', null, kbMeta);
+        }
+      } else {
+        console.warn('[KB] 服务器请求失败 HTTP', kbResp.status);
+        updateKBStatus('fail', null, kbMeta);
+      }
+    } catch(e) {
+      updateKBStatus('offline', e.message);
+      console.warn('[KB] 知识库检索失败:', e.message);
+    }
+  }
+
+  try {
+    let sys = isFirstMsg ? SYSTEM_PROMPT+'\n\n这是你和用户的第一条对话。免责声明简短说一句即可，后续不再提。' : SYSTEM_PROMPT;
+    if (kbContext) { sys += '\n\n【以下是你专属的录取数据库，用张雪峰第一人称解读，禁止说"根据数据"】\n' + kbContext; }
+    if (kbMeta && kbMeta.province && !kbMeta.province_available) {
+      sys += '
+
+⚠️ 重要提醒（必须复述给用户）：当前数据库仅有河北省的录取数据，用户问的是【' + kbMeta.province + '】省。以下分数线全是河北省的，你必须第一时间告知用户这个事实，提醒用户去查本省教育考试院官网。河北的位次仅作横向参考，绝对不能用河北分数直接套其他省的志愿。';
+    }
+    const s = getCurrentSession();
+    const history = s ? s.messages.map(m=>({role:m.role==='user'?'user':'assistant',content:m.content})) : [];
+
+    const body = { model: modelSelect.value, max_tokens: 4096, temperature: 0.6, messages: [{ role: 'system', content: sys }, ...history] };
+
+    const resp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+      body: JSON.stringify(body)
+    });
+
+    removeTyping();
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      addMsg('ai', '调用出错：' + (err.error?.message || 'HTTP ' + resp.status) + '\n检查 API Key 是否正确。', true);
+      return;
+    }
+
+    const data = await resp.json();
+    const reply = data.choices?.[0]?.message?.content || '（没内容返回）';
+    if (isFirstMsg) isFirstMsg = false;
+    addMsg('ai', reply);
+  } catch(e) {
+    removeTyping();
+    addMsg('ai', '网络请求失败：' + e.message, true);
+  } finally {
+    sendBtn.disabled = false; userInput.disabled = false; userInput.focus();
+  }
+}
+async function sendMsg() { const text=userInput.value.trim(); if(!text||sendBtn.disabled)return; userInput.value='';userInput.style.height='auto'; if(!getCurrentSession())newSession(); addMsg('user',text); await callAPI(text); }
+function quickAsk(q) { userInput.value=q; sendMsg(); }
+
+// ─── Analytics ───
+function switchToAnalytics() {
+  const showing = analyticsView.classList.contains('show');
+  if (showing) { analyticsView.classList.remove('show'); chatWrap.style.display=''; inputArea.style.display=''; }
+  else { analyticsView.classList.add('show'); chatWrap.style.display='none'; inputArea.style.display='none'; renderAnalytics(); }
+}
+function openUserManage() { switchToAnalytics(); document.getElementById('adminUserTable').scrollIntoView({behavior:'smooth'}); }
+
+function renderAnalytics() {
+  Object.values(charts).forEach(c=>c.destroy()); charts={};
+  const isAdmin = currentUser.role === 'admin';
+  const targetUsers = isAdmin && !viewAsUser ? Object.keys(appData.users).filter(u=>appData.users[u].role==='user') : [getEffectiveUser()];
+  const allSessions = targetUsers.flatMap(u=>getSessions(u));
+  const allMsgs = allSessions.flatMap(s=>s.messages);
+  const userMsgs = allMsgs.filter(m=>m.role==='user');
+  const totalSessions = allSessions.length;
+  const totalQuestions = userMsgs.length;
+
+  document.getElementById('anaTitle').textContent = isAdmin && !viewAsUser ? '📊 全局数据分析（所有用户）' : '📊 对话数据分析';
+  document.getElementById('anaSub').textContent = isAdmin && !viewAsUser ? `共 ${targetUsers.length} 个用户，${totalSessions} 次对话，${totalQuestions} 个问题` : '基于历史对话记录的统计分析';
+
+  // Tags
+  const allTags={};
+  allSessions.forEach(s=>s.tags.forEach(t=>{allTags[t]=(allTags[t]||0)+1;}));
+  const topTag=Object.entries(allTags).sort((a,b)=>b[1]-a[1])[0];
+
+  document.getElementById('statCards').innerHTML = `
+    <div class="stat-card"><div class="stat-num">${targetUsers.length}</div><div class="stat-label">用户数</div></div>
+    <div class="stat-card"><div class="stat-num">${totalSessions}</div><div class="stat-label">对话总数</div></div>
+    <div class="stat-card"><div class="stat-num">${totalQuestions}</div><div class="stat-label">提问总数</div></div>
+    <div class="stat-card"><div class="stat-num">${topTag?topTag[0]:'--'}</div><div class="stat-label">最热话题${topTag?' ('+topTag[1]+'次)':''}</div></div>`;
+
+  // Topic pie
+  const tagEntries = Object.entries(allTags).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  if (tagEntries.length>0) {
+    charts.topic = new Chart(document.getElementById('chartTopic'),{type:'doughnut',data:{labels:tagEntries.map(e=>e[0]),datasets:[{data:tagEntries.map(e=>e[1]),backgroundColor:['#f0883e','#3b6df0','#22a85d','#e5534b','#8b5cf6','#f59e0b','#06b6d4','#ec4899','#84cc16','#6366f1']}]},options:{responsive:true,plugins:{legend:{position:'right',labels:{boxWidth:12,font:{size:11},padding:12}}}}});
+  }
+
+  // Major bar
+  if (tagEntries.length>0) {
+    charts.major = new Chart(document.getElementById('chartMajor'),{type:'bar',data:{labels:tagEntries.map(e=>e[0]),datasets:[{label:'提问次数',data:tagEntries.map(e=>e[1]),backgroundColor:'#f0883e',borderRadius:6}]},options:{responsive:true,indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{ticks:{stepSize:1}}}}});
+  }
+
+  // Trend
+  const dayCounts={};
+  const now=new Date();
+  for(let i=29;i>=0;i--){const d=new Date(now);d.setDate(d.getDate()-i);dayCounts[d.toISOString().slice(0,10)]=0;}
+  userMsgs.forEach(m=>{const s=allSessions.find(s=>s.messages.includes(m));if(s){const day=s.createdAt.slice(0,10);if(dayCounts.hasOwnProperty(day))dayCounts[day]++;else{const keys=Object.keys(dayCounts);if(keys.length>0&&day>=keys[0])dayCounts[day]=(dayCounts[day]||0)+1;}}});
+  charts.trend = new Chart(document.getElementById('chartTrend'),{type:'line',data:{labels:Object.keys(dayCounts).map(d=>d.slice(5)),datasets:[{label:'提问数',data:Object.values(dayCounts),borderColor:'#f0883e',backgroundColor:'rgba(240,136,62,0.08)',fill:true,tension:0.3,pointRadius:2}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{ticks:{stepSize:1},min:0}}}});
+
+  // Users activity (admin)
+  if (isAdmin) {
+    const userActivity = {};
+    targetUsers.forEach(u=>{userActivity[u]=getSessions(u).flatMap(s=>s.messages).filter(m=>m.role==='user').length;});
+    const uEntries = Object.entries(userActivity).sort((a,b)=>b[1]-a[1]);
+    charts.users = new Chart(document.getElementById('chartUsers'),{type:'bar',data:{labels:uEntries.map(e=>e[0]),datasets:[{label:'提问数',data:uEntries.map(e=>e[1]),backgroundColor:'#3b6df0',borderRadius:6}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{ticks:{stepSize:1},min:0}}}});
+
+    // User table
+    document.getElementById('userTableBody').innerHTML = targetUsers.map(u=>{
+      const ss=getSessions(u); const qs=ss.flatMap(s=>s.messages).filter(m=>m.role==='user').length;
+      return `<tr><td>${u}</td><td>${appData.users[u].role}</td><td>${ss.length}</td><td>${qs}</td><td>${new Date(appData.users[u].createdAt || '2024-01-01').toLocaleDateString()}</td><td><button class="act-btn" onclick="adminChangePassword('${u}')">改密</button><button class="act-btn danger" onclick="adminDeleteUser('${u}')">删除</button></td></tr>`;
+    }).join('');
+  } else {
+    charts.users = new Chart(document.getElementById('chartUsers'),{type:'polarArea',data:{labels:['高考志愿','考研','就业薪资','专业选择','考公考编'],datasets:[{data:[countTag('高考志愿'),countTag('考研'),countTag('就业薪资'),countTag('计算机/AI')+countTag('医学')+countTag('法学'),countTag('考公考编')],backgroundColor:['#f0883e','#e5534b','#3b6df0','#22a85d','#8b5cf6']}]},options:{responsive:true,plugins:{legend:{position:'right',labels:{boxWidth:12,font:{size:11}}}}}});
+  }
+}
+function countTag(tag) { return getEffectiveSessions().filter(s=>s.tags.includes(tag)).length; }
+
+// ─── Init (called by login script on success) ───
+window._zxfInit = async function() {
+  console.log('[ZxfApp] _zxfInit called');
+  try {
+    currentUser = window._zxfLogin.current;
+    console.log('[ZxfApp] currentUser:', currentUser);
+    if (!currentUser) { console.log('[ZxfApp] No currentUser, aborting'); return; }
+    viewAsUser = null;
+    loadAppData();
+    console.log('[ZxfApp] appData loaded, users:', Object.keys(appData.users));
+    await initApp();
+    console.log('[ZxfApp] initApp complete, ready for interaction');
+  } catch(e) {
+    console.error('[ZxfApp] Init error:', e);
+    var errEl = document.getElementById('loginErr');
+    var ovEl = document.getElementById('loginOverlay');
+    if (errEl) errEl.textContent = '初始化失败: ' + e.message;
+    if (errEl) errEl.style.color = '#e5534b';
+    if (ovEl) ovEl.style.display = 'flex';
+  }
+};
+
+// Also wire up event listeners immediately (don't wait for login)
+try {
+  if (userInput) userInput.addEventListener('input', ()=>{userInput.style.height='auto';userInput.style.height=Math.min(userInput.scrollHeight,130)+'px';});
+} catch(e) {}
+try {
+  if (settingsModal) settingsModal.addEventListener('click', (e)=>{if(e.target===settingsModal)closeSettings();});
+} catch(e) {}
+
+// ─── Dynamic Chart.js + Self-diagnostic ───
+(function() {
+  var s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
+  s.onerror = function() { console.warn('[ZxfApp] Chart.js failed (analytics unavailable)'); };
+  document.head.appendChild(s);
+})();
+console.log('[ZxfApp] doLogin=' + (typeof doLogin) + ' sendMsg=' + (typeof sendMsg) + ' quickAsk=' + (typeof quickAsk));
