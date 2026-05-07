@@ -1,5 +1,14 @@
 {
-  "admin": [],
+  "admin": [
+    {
+      "id": "movcmoehsa7p",
+      "name": "新对话",
+      "messages": [],
+      "tags": [],
+      "createdAt": "2026-05-07T10:34:11.081Z",
+      "updatedAt": "2026-05-07T10:34:11.081Z"
+    }
+  ],
   "王泽宇": [],
   "刘青": [
     {
